@@ -1,0 +1,46 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.local
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test and temporary files
+.cleanup_backup/
+demo_workspace/
+test_workspace_lite/
+opencv_test_workspace/
+nohup.out
+*.log
+
+# DeepFace model cache (downloaded at runtime)
+.deepface/
+
+# pytest cache
+.pytest_cache/
+
+# Documentation build
+site/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
