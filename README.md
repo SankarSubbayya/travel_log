@@ -4,7 +4,15 @@ A Python project for managing travel memories with advanced face recognition cap
 
 ## Features
 
-### 🎭 Face Recognition (NEW!)
+### 📱 HEIC Image Support (NEW!)
+
+Full support for Apple's HEIC/HEIF image format:
+- **Automatic conversion** to JPEG for processing
+- **Command-line tools** support HEIC files
+- **Streamlit app** can upload and process HEIC images
+- **Works seamlessly** with all face detection features
+
+### 🎭 Face Recognition
 
 Travel Log now includes comprehensive face detection, recognition, and management capabilities:
 
@@ -54,6 +62,32 @@ source .venv/bin/activate  # On Unix/macOS
 .venv\Scripts\activate  # On Windows
 ```
 
+## 🌐 Web Interface (NEW!)
+
+Launch the interactive Streamlit web app:
+
+```bash
+# Using the helper script
+./run_app.sh
+
+# Or directly
+uv run streamlit run app.py
+```
+
+The app provides:
+- 📤 **Drag-and-drop image upload**
+- 🔍 **Real-time face detection**
+- 👤 **Visual preview of detected faces**
+- ⬇️ **Download extracted faces**
+- ⚙️ **Configure detection settings**
+- 📊 **Statistics and confidence scores**
+- 📸 **EXIF metadata display** - Shows date, time, GPS location, camera info
+
+**Troubleshooting:**
+- Port in use? `./kill_streamlit.sh` then `./run_app.sh`
+- Can't connect? Use `http://localhost:8501` (not external IP)
+- See [Troubleshooting Guide](documentation/TROUBLESHOOTING.md) for complete guide
+
 ## Quick Start
 
 ### Basic Face Detection
@@ -102,11 +136,13 @@ print(f"Processed {summary['extracted_faces']} faces")
 ## Documentation
 
 - **[Quick Start Guide](documentation/FACE_RECOGNITION_QUICKSTART.md)** - Get started in 5 minutes
+- **[Configuration Guide](documentation/CONFIGURATION.md)** - Configure paths and settings
 - **[Complete Documentation Index](documentation/README.md)** - All guides and tutorials
 - **[Face Recognition Guide](docs/face-recognition-guide.md)** - Comprehensive technical guide
 - **[Examples](examples/README.md)** - Example scripts demonstrating all features
 
 ### Key Guides
+- [Configuration Guide](documentation/CONFIGURATION.md) - Configure image paths and settings
 - [Testing Guide](documentation/TESTING_GUIDE.md) - How to test the application
 - [TensorFlow Warnings](documentation/TENSORFLOW_WARNING_FIX.md) - Fix common issues
 - [Alternatives](documentation/DEEPFACE_ALTERNATIVES.md) - Other face recognition libraries

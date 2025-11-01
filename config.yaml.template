@@ -14,12 +14,14 @@ cohort: Spring 2025
 # Image Dataset Configuration
 images:
   # Path to personal photo collection
-  personal_photos_dir: /home/sankar/personal_photos
+  # Update this to point to your photo directory
+  personal_photos_dir: /path/to/your/photos
   
   # Default test image (can be overridden via command line)
-  default_test_image: /home/sankar/personal_photos/IMG_0276_2.jpeg
+  # Update this to a specific image you want to test with
+  default_test_image: /path/to/your/test/image.jpg
   
-  # Output directories
+  # Output directories (relative to project root)
   output:
     extracted_faces: extracted_faces
     annotated_images: annotated_images
@@ -28,8 +30,14 @@ images:
 # Face Detection Configuration
 face_detection:
   # Detection backend: opencv, ssd, mtcnn, retinaface, dlib
+  # - opencv: Fast, good for testing
+  # - mtcnn: More accurate, recommended
+  # - retinaface: Most accurate, slower
   default_backend: mtcnn
   
   # Recognition model: VGG-Face, Facenet, Facenet512, OpenFace, DeepFace, ArcFace
+  # - Facenet: Fast, 128 dimensions
+  # - Facenet512: Better accuracy, 512 dimensions (recommended)
+  # - VGG-Face: High accuracy, 4096 dimensions, large
   default_model: Facenet512
 

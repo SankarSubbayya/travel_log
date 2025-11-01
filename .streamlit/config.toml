@@ -1,0 +1,21 @@
+[server]
+# Port to run on
+port = 8501
+
+# For local access only (default, most secure)
+address = "localhost"
+
+# Uncomment below to allow access from other devices on your network
+# WARNING: Only use on trusted networks
+# address = "0.0.0.0"
+
+# Disable file watcher for better performance
+fileWatcherType = "none"
+
+# Disable usage stats
+[browser]
+gatherUsageStats = false
+
+# Server will automatically open browser
+serverAddress = "localhost"
+
