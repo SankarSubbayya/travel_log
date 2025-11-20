@@ -17,6 +17,7 @@ import tempfile
 import shutil
 import traceback
 from typing import List, Dict
+import numpy as np
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -31,6 +32,7 @@ from travel_log import (
     get_complete_metadata,
     format_gps_for_maps
 )
+from travel_log.caption_generator import CaptionGenerator
 
 # Page configuration
 st.set_page_config(
@@ -72,7 +74,18 @@ if 'processed_image' not in st.session_state:
 if 'image_metadata' not in st.session_state:
     st.session_state.image_metadata = None
 if 'labeler' not in st.session_state:
-    st.session_state.labeler = None
+    # Auto-initialize with VGG-Face model (recommended for GPU)
+    try:
+        from travel_log import FaceLabeler
+        st.session_state.labeler = FaceLabeler(
+            database_path="face_database",
+            model_name="VGG-Face",
+            detector_backend="retinaface",  # Match detector used for face detection
+            distance_metric="cosine"
+        )
+        st.session_state.current_db_path = "face_database"
+    except Exception as e:
+        st.session_state.labeler = None
 if 'face_identifications' not in st.session_state:
     st.session_state.face_identifications = {}
 if 'current_db_path' not in st.session_state:
@@ -81,6 +94,18 @@ if 'batch_results' not in st.session_state:
     st.session_state.batch_results = None
 if 'batch_progress' not in st.session_state:
     st.session_state.batch_progress = 0
+if 'caption_generator' not in st.session_state:
+    st.session_state.caption_generator = None
+if 'image_captions' not in st.session_state:
+    st.session_state.image_captions = None
+if 'dspy_generator' not in st.session_state:
+    st.session_state.dspy_generator = None
+if 'use_dspy' not in st.session_state:
+    st.session_state.use_dspy = False
+if 'qdrant_store' not in st.session_state:
+    st.session_state.qdrant_store = None
+if 'current_photo_path' not in st.session_state:
+    st.session_state.current_photo_path = None
 
 def initialize_detector(backend):
     """Initialize the face detector with specified backend."""
@@ -107,6 +132,116 @@ def initialize_labeler(database_path, model_name='Facenet512', distance_metric='
             return True
     except Exception as e:
         st.error(f"Error initializing face recognition: {str(e)}")
+        return False
+
+def initialize_caption_generator(model_name="llava:7b"):
+    """Initialize the caption generator with Ollama vision model."""
+    try:
+        with st.spinner(f"Connecting to Ollama and loading {model_name} model..."):
+            generator = CaptionGenerator(model_name=model_name)
+            st.session_state.caption_generator = generator
+            st.success(f"✅ Caption generator ready! Connected to Ollama with {model_name} model.")
+            return True
+    except ConnectionError as e:
+        st.error(f"❌ Cannot connect to Ollama: {str(e)}")
+        st.markdown(f"""
+        #### To use caption generation, you need to:
+        1. **Install Ollama** from https://ollama.ai
+        2. **Pull a vision model**:
+           ```bash
+           ollama pull {model_name}
+           # Or alternative models:
+           ollama pull llava:7b
+           ollama pull qwen2.5vl:7b
+           ```
+        3. **Start Ollama** (in a new terminal):
+           ```bash
+           ollama serve
+           ```
+        4. Then come back here and click the button again.
+        """)
+        return False
+    except Exception as e:
+        st.error(f"❌ Error initializing caption generator: {str(e)}")
+        st.error("**Details:**\n" + traceback.format_exc())
+        return False
+
+def initialize_dspy_generator():
+    """Initialize the DSPy-enhanced caption generator."""
+    try:
+        with st.spinner("Initializing DSPy + LLaVA integration..."):
+            from travel_log.dspy_llava_integration import DSPyLLaVACaptionGenerator
+            generator = DSPyLLaVACaptionGenerator()
+            st.session_state.dspy_generator = generator
+            st.success("✅ DSPy caption generator ready! Enhanced reasoning enabled.")
+            return True
+    except ImportError:
+        st.error("❌ DSPy not installed!")
+        st.markdown("""
+        #### To use DSPy-enhanced captions:
+        1. **Install DSPy**:
+           ```bash
+           uv add dspy-ai
+           ```
+        2. **Ensure Llama3 model** (for reasoning):
+           ```bash
+           ollama pull llama3
+           ```
+        3. Then come back and click the button again.
+        """)
+        return False
+    except ConnectionError as e:
+        st.error(f"❌ Cannot connect to Ollama: {str(e)}")
+        st.info("Make sure Ollama is running with both llava:7b and llama3 models")
+        return False
+    except Exception as e:
+        st.error(f"❌ Error initializing DSPy generator: {str(e)}")
+        st.error("**Details:**\n" + traceback.format_exc())
+        return False
+
+def initialize_qdrant_store():
+    """Initialize Qdrant vector database connection."""
+    try:
+        with st.spinner("Connecting to Qdrant..."):
+            from travel_log.qdrant_store import create_qdrant_store
+            # Connect to Qdrant on sapphire server
+            store = create_qdrant_store(url="http://sapphire:6333")
+            stats = store.get_statistics()
+            st.session_state.qdrant_store = store
+            st.success(f"✅ Qdrant connected! {stats['total_photos']} photos in database.")
+            return True
+    except ImportError:
+        st.error("❌ Qdrant client not installed!")
+        st.markdown("""
+        #### To use Qdrant storage:
+        1. **Install Qdrant client**:
+           ```bash
+           uv add qdrant-client
+           ```
+        2. **Start Qdrant** (Docker):
+           ```bash
+           docker start <qdrant_container_name>
+           ```
+        3. Then come back and click the button again.
+        """)
+        return False
+    except Exception as e:
+        st.error(f"❌ Cannot connect to Qdrant: {str(e)}")
+        st.markdown("""
+        #### Troubleshooting:
+        1. Check Qdrant is running:
+           ```bash
+           docker ps | grep qdrant
+           ```
+        2. Start Qdrant if needed:
+           ```bash
+           docker start <container_name>
+           ```
+        3. Verify connection:
+           ```bash
+           curl http://localhost:6333
+           ```
+        """)
         return False
 
 def process_batch_faces(faces_dir: Path, labeler, confidence_threshold: float = 0.6) -> Dict:
@@ -208,61 +343,96 @@ def process_batch_faces(faces_dir: Path, labeler, confidence_threshold: float = 
 
 def identify_faces(face_images: List[Dict], confidence_threshold: float = 0.6) -> Dict:
     """
-    Identify detected faces against the database.
+    Identify detected faces using Qdrant reference_faces collection.
 
     Args:
         face_images: List of face image data
-        confidence_threshold: Minimum confidence for matches
+        confidence_threshold: Minimum confidence for matches (converted from distance threshold)
 
     Returns:
         Dictionary with identification results
     """
-    if st.session_state.labeler is None:
+    if st.session_state.qdrant_store is None:
+        st.error("❌ Qdrant not connected! Click 'Connect to Qdrant' in the sidebar first.")
         return {}
+
+    from deepface import DeepFace
+    import numpy as np
 
     results = {}
 
+    # Log for debugging
+    st.info(f"🔍 Identifying {len(face_images)} faces using Qdrant reference_faces collection...")
+
+    # Convert confidence threshold to distance threshold
+    # For VGG-Face cosine distance: confidence = 1 - distance
+    # So: distance_threshold = 1 - confidence_threshold
+    # But we use a more lenient threshold for better matches
+    distance_threshold = 0.25  # Works well for VGG-Face
+
     for idx, face_data in enumerate(face_images):
         try:
-            # Save face to temporary file
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
-                face_data['image'].save(tmp.name, format='JPEG')
-                tmp_path = tmp.name
+            # Convert PIL image to numpy array for DeepFace
+            face_array = np.array(face_data['image'])
 
-            # Identify face
-            match_results = st.session_state.labeler.find_face(tmp_path)
+            # Generate embedding using VGG-Face
+            embedding_result = DeepFace.represent(
+                img_path=face_array,
+                model_name="VGG-Face",
+                enforce_detection=False
+            )
 
-            # Clean up
-            Path(tmp_path).unlink()
-
-            if match_results and len(match_results) > 0 and not match_results[0].empty:
-                best_match = match_results[0].iloc[0]
-                distance = float(best_match['distance'])
-
-                # Convert distance to confidence
-                confidence = max(0, 1 - (distance / 2.0))
-
-                if confidence >= confidence_threshold:
-                    person_name = Path(best_match['identity']).parent.name
-                    results[idx] = {
-                        'match': person_name,
-                        'confidence': confidence,
-                        'distance': distance,
-                        'matched_image': best_match['identity']
-                    }
-                else:
-                    results[idx] = {
-                        'match': 'Unknown',
-                        'confidence': confidence,
-                        'distance': distance,
-                        'status': 'low_confidence'
-                    }
-            else:
+            if not embedding_result:
                 results[idx] = {
                     'match': 'Unknown',
                     'confidence': 0.0,
-                    'status': 'no_match'
+                    'status': 'no_embedding'
+                }
+                continue
+
+            embedding = embedding_result[0]['embedding']
+
+            # Search in Qdrant reference_faces collection
+            if st.session_state.qdrant_store:
+                search_results = st.session_state.qdrant_store.client.search(
+                    collection_name="reference_faces",
+                    query_vector=embedding,
+                    limit=3
+                )
+
+                if search_results:
+                    best_match = search_results[0]
+                    person_name = best_match.payload['person_name']
+                    score = best_match.score  # Cosine similarity score (0-1, higher is better)
+                    distance = 1 - score  # Convert to distance
+
+                    # Convert distance to confidence percentage
+                    confidence = max(0, 1 - distance)
+
+                    if distance <= distance_threshold:
+                        results[idx] = {
+                            'match': person_name,
+                            'confidence': confidence,
+                            'distance': distance,
+                            'status': 'matched'
+                        }
+                    else:
+                        results[idx] = {
+                            'match': 'Unknown',
+                            'confidence': confidence,
+                            'distance': distance,
+                            'status': 'low_confidence'
+                        }
+                else:
+                    results[idx] = {
+                        'match': 'Unknown',
+                        'confidence': 0.0,
+                        'status': 'no_match'
+                    }
+            else:
+                results[idx] = {
+                    'match': 'Error',
+                    'error': 'Qdrant not connected'
                 }
 
         except Exception as e:
@@ -296,39 +466,52 @@ def process_image(image_file, detector, min_confidence=0.9):
         # Extract faces using the correct method
         with st.spinner("Detecting faces..."):
             faces = detector.extract_faces(tmp_path)
-            
+
             # Filter by confidence
             filtered_faces = [f for f in faces if f.get('confidence', 1.0) >= min_confidence]
-            
+
             # Get original image
             img = Image.open(tmp_path)
-            
+
             # Get face images from the extracted faces
             face_images = []
             for i, face in enumerate(filtered_faces):
-                # Get facial area coordinates
+                # Get the face numpy array or crop from coordinates
                 facial_area = face.get('facial_area', {})
                 x = facial_area.get('x', 0)
                 y = facial_area.get('y', 0)
                 w = facial_area.get('w', 0)
                 h = facial_area.get('h', 0)
-                
-                # Crop face from original image
-                face_img = img.crop((x, y, x + w, y + h))
+
+                # Use face numpy array from DeepFace extraction if available
+                if 'face' in face:
+                    # Convert numpy array to PIL Image
+                    face_array = face['face']
+                    # DeepFace returns normalized 0-1 or 0-255 arrays
+                    if face_array.max() <= 1.0:
+                        face_array = (face_array * 255).astype(np.uint8)
+                    else:
+                        face_array = face_array.astype(np.uint8)
+                    face_img = Image.fromarray(face_array)
+                else:
+                    # Fallback: crop from original image
+                    face_img = img.crop((x, y, x + w, y + h))
+
                 face_images.append({
                     'image': face_img,
                     'location': (x, y, w, h),
                     'confidence': face.get('confidence', 1.0)
                 })
             
-            # Clean up
-            Path(tmp_path).unlink()
-            
+            # Don't clean up temp file yet - we might need it for Qdrant
+            # Path(tmp_path).unlink()
+
             return {
                 'original_image': img,
                 'faces': face_images,
                 'num_faces': len(filtered_faces),
-                'metadata': metadata
+                'metadata': metadata,
+                'temp_path': tmp_path  # Keep path for Qdrant storage
             }
             
     except Exception as e:
@@ -342,10 +525,12 @@ def main():
     st.markdown("**Upload photos, detect faces, and identify them**")
 
     # Create tabs for different features
-    detection_tab, identification_tab, database_tab = st.tabs([
+    detection_tab, identification_tab, caption_tab, qdrant_tab, database_tab = st.tabs([
         "🔍 Face Detection",
         "🎯 Face Identification",
-        "💾 Database Management"
+        "✍️ Image Captions",
+        "🗄️ Qdrant Storage",
+        "💾 Face Database"
     ])
 
     # Sidebar
@@ -447,6 +632,7 @@ def main():
                             st.session_state.detected_faces = result['faces']
                             st.session_state.processed_image = result['original_image']
                             st.session_state.image_metadata = result['metadata']
+                            st.session_state.current_photo_path = result.get('temp_path')  # Save for Qdrant
                             st.success(f"✅ Detected {result['num_faces']} face(s)!")
                             st.rerun()
 
@@ -651,14 +837,14 @@ Current Configuration:
                 help="Path to directory containing labeled face images"
             )
 
-            model_options = ['Facenet512', 'VGG-Face', 'Facenet', 'ArcFace', 'DeepFace',
+            model_options = ['VGG-Face', 'Facenet512', 'Facenet', 'ArcFace', 'DeepFace',
                            'OpenFace', 'DeepID', 'Dlib', 'SFace']
 
             recognition_model = st.selectbox(
                 "Recognition Model",
                 model_options,
                 index=0,
-                help="Face recognition model to use"
+                help="Face recognition model to use (VGG-Face recommended - works best with GPU)"
             )
 
             if st.button("⚙️ Initialize Identification", type="primary"):
@@ -900,7 +1086,538 @@ Current Configuration:
                 st.info("Upload a directory with extracted faces and click 'Start Batch Processing'")
 
     # ============================================================================
-    # TAB 3: DATABASE MANAGEMENT
+    # TAB 3: IMAGE CAPTIONS
+    # ============================================================================
+    with caption_tab:
+        st.header("✍️ Image Captions & Titles")
+        st.markdown("Generate AI-powered captions and titles for your travel photos using LLaVA")
+
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+            st.subheader("📤 Upload Image for Captions")
+
+            # Caption mode selection
+            caption_mode = st.radio(
+                "Caption Generation Mode:",
+                ["🔍 Basic (LLaVA only)", "🧠 Enhanced (DSPy + LLaVA)"],
+                help="Basic: Simple visual description | Enhanced: Context-aware with face names, location, mood"
+            )
+
+            use_dspy = "Enhanced" in caption_mode
+            st.session_state.use_dspy = use_dspy
+
+            # Model selection
+            vision_model = st.selectbox(
+                "Vision Model",
+                options=["llava:7b", "qwen2.5vl:7b"],
+                index=0,
+                help="Select the Ollama vision model to use for caption generation"
+            )
+
+            # Initialize appropriate generator
+            if use_dspy:
+                if st.button("🚀 Load Enhanced Caption Generator", type="primary"):
+                    if initialize_dspy_generator():
+                        st.success("✅ DSPy + LLaVA generator loaded!")
+
+                if st.session_state.dspy_generator:
+                    st.success("✅ Enhanced caption generator is ready")
+                    st.info("💡 Will use face recognition, GPS, and timestamp data")
+                else:
+                    st.info("💡 Click 'Load Enhanced Caption Generator' for smart captions")
+            else:
+                if st.button("🚀 Load Caption Generator", type="primary"):
+                    if initialize_caption_generator(model_name=vision_model):
+                        st.success(f"✅ Caption generator loaded with {vision_model}!")
+
+                if st.session_state.caption_generator:
+                    current_model = st.session_state.caption_generator.model_name
+                    st.success(f"✅ Caption generator is ready (using {current_model})")
+                else:
+                    st.info("💡 Click 'Load Caption Generator' to enable caption generation")
+
+            st.divider()
+
+            # Determine supported file types
+            supported_types = ['jpg', 'jpeg', 'png', 'bmp', 'gif']
+            if HEIC_SUPPORTED:
+                supported_types.extend(['heic', 'heif'])
+
+            uploaded_file = st.file_uploader(
+                "Choose an image file for captions",
+                type=supported_types,
+                help="Upload a photo to generate captions"
+            )
+
+            if uploaded_file is not None:
+                st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
+
+                # Caption generation options
+                caption_type = st.radio(
+                    "Type of caption to generate:",
+                    ["All (caption, title, travel)", "Title only", "Detailed caption", "Travel caption only"],
+                    help="Choose what type of captions you want"
+                )
+
+                if st.button("✨ Generate Captions", type="primary"):
+                    # Check if appropriate generator is loaded
+                    if use_dspy and st.session_state.dspy_generator is None:
+                        st.warning("⚠️ Please load the Enhanced Caption Generator first!")
+                    elif not use_dspy and st.session_state.caption_generator is None:
+                        st.warning("⚠️ Please load the Caption Generator first!")
+                    else:
+                        try:
+                            # Load image
+                            image = Image.open(uploaded_file)
+
+                            # Convert HEIC to JPEG if necessary (for file processing)
+                            file_ext = Path(uploaded_file.name).suffix.lower()
+                            if file_ext in ['.heic', '.heif']:
+                                # Convert HEIC file to PIL Image via temp conversion
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+                                    tmp_file.write(uploaded_file.getvalue())
+                                    tmp_path = tmp_file.name
+                                with st.spinner("Converting HEIC image..."):
+                                    tmp_path = ensure_compatible_image(tmp_path)
+                                image = Image.open(tmp_path)
+                                Path(tmp_path).unlink()
+
+                            if use_dspy:
+                                # Enhanced DSPy + LLaVA generation
+                                with st.spinner("⏳ Analyzing with DSPy + LLaVA...\n\nCombining vision, face recognition, and context..."):
+                                    # Get face names if available
+                                    face_names = None
+                                    if st.session_state.face_identifications:
+                                        face_names = [
+                                            ident.get('match', '')
+                                            for ident in st.session_state.face_identifications.values()
+                                            if ident.get('match') and ident.get('match') not in ['Unknown', 'Error']
+                                        ]
+
+                                    # Get metadata if available
+                                    location = None
+                                    timestamp = None
+                                    if st.session_state.image_metadata:
+                                        meta = st.session_state.image_metadata
+                                        if 'latitude' in meta and 'longitude' in meta:
+                                            location = f"{meta['latitude']:.4f}, {meta['longitude']:.4f}"
+                                        timestamp = meta.get('datetime')
+
+                                    # Generate enhanced captions
+                                    result = st.session_state.dspy_generator.forward(
+                                        image=image,
+                                        face_names=face_names,
+                                        location=location,
+                                        timestamp=timestamp
+                                    )
+
+                                    # Format for display
+                                    st.session_state.image_captions = {
+                                        'title': result['title'],
+                                        'caption': result['caption'],
+                                        'scene_type': result['scene_type'],
+                                        'mood': result['mood'],
+                                        'hashtags': result['hashtags'],
+                                        'raw_visual_analysis': result.get('raw_visual_analysis', '')
+                                    }
+                            else:
+                                # Basic LLaVA generation
+                                with st.spinner("⏳ Analyzing image with LLaVA...\n\nThis may take 30-60 seconds"):
+                                    captions = st.session_state.caption_generator.generate_all(image)
+                                    st.session_state.image_captions = captions
+
+                            st.success("✅ Captions generated!")
+                            st.rerun()
+
+                        except TimeoutError:
+                            st.error("⏱️ Caption generation timed out. The model is taking too long to load.")
+                            st.info("💡 Try reducing the image size or restarting the app.")
+                        except Exception as e:
+                            st.error(f"Error generating captions: {str(e)}")
+                            if "cuda" in str(e).lower() or "gpu" in str(e).lower():
+                                st.error("GPU Error - Check GPU memory availability")
+                            st.error(f"Details: {traceback.format_exc()}")
+
+        with col2:
+            st.subheader("📝 Generated Captions")
+
+            if st.session_state.image_captions:
+                captions = st.session_state.image_captions
+
+                # Show DSPy-specific fields if available
+                if st.session_state.use_dspy and 'scene_type' in captions:
+                    col_meta1, col_meta2 = st.columns(2)
+                    with col_meta1:
+                        st.metric("Scene Type", captions.get('scene_type', 'N/A'))
+                    with col_meta2:
+                        st.metric("Mood", captions.get('mood', 'N/A'))
+                    st.divider()
+
+                if 'title' in captions:
+                    st.markdown("### 🎯 Title")
+                    st.markdown(f"> {captions['title']}")
+
+                if 'caption' in captions:
+                    st.markdown("### 📖 Detailed Caption")
+                    st.markdown(f"> {captions['caption']}")
+
+                if 'travel_caption' in captions:
+                    st.markdown("### ✈️ Travel Caption")
+                    st.markdown(f"> {captions['travel_caption']}")
+
+                # Show DSPy hashtags
+                if st.session_state.use_dspy and 'hashtags' in captions:
+                    st.markdown("### #️⃣ Hashtags")
+                    st.markdown(f"> {captions['hashtags']}")
+
+                # Show raw visual analysis in expandable section
+                if st.session_state.use_dspy and 'raw_visual_analysis' in captions:
+                    with st.expander("🔍 Raw Visual Analysis (LLaVA)"):
+                        st.write(captions['raw_visual_analysis'])
+
+                # Copy to clipboard
+                st.divider()
+                st.subheader("📋 Copy Captions")
+
+                all_captions = "\n\n".join(
+                    f"**{key.replace('_', ' ').title()}:**\n{value}"
+                    for key, value in captions.items()
+                    if value
+                )
+
+                st.text_area(
+                    "Copy all captions:",
+                    value=all_captions,
+                    height=200,
+                    disabled=True
+                )
+
+                # Download as JSON
+                import json
+                json_captions = json.dumps(captions, indent=2)
+                st.download_button(
+                    label="📥 Download as JSON",
+                    data=json_captions,
+                    file_name="image_captions.json",
+                    mime="application/json"
+                )
+
+            else:
+                st.info("👈 Upload an image and click 'Generate Captions' to see results here.")
+
+        st.divider()
+        with st.expander("ℹ️ About Image Captions"):
+            st.markdown("""
+            ### How it works
+
+            This feature uses **LLaVA** (Large Language and Vision Assistant), a powerful open-source vision-language model, to automatically generate captions.
+
+            #### 🔍 Basic Mode (LLaVA only)
+            - Pure visual description of the image
+            - Fast and simple
+            - Generates titles, captions, and travel-specific descriptions
+
+            #### 🧠 Enhanced Mode (DSPy + LLaVA)
+            - **Vision (LLaVA)**: Analyzes what's in the image
+            - **Reasoning (DSPy)**: Adds context and intelligence
+            - **Integration**: Combines face recognition, GPS, timestamps
+            - **Output**: Scene type, mood, personalized captions with names, hashtags
+
+            ### Capabilities
+
+            **Basic Mode analyzes:**
+            - Landscapes and scenery
+            - People and activities
+            - Buildings and landmarks
+            - Weather and lighting
+            - Visual elements
+
+            **Enhanced Mode adds:**
+            - ✅ Mentions people by name (from face recognition)
+            - ✅ Location context (from GPS/EXIF)
+            - ✅ Time awareness (morning/afternoon/evening)
+            - ✅ Scene categorization (landscape/portrait/group)
+            - ✅ Emotional tone (joyful/peaceful/adventurous)
+            - ✅ Social media hashtags
+            - ✅ Multi-format outputs
+
+            ### Example Comparison
+
+            **Basic Mode:**
+            > "A beach scene with people at sunset"
+
+            **Enhanced Mode (with face names + GPS):**
+            > Title: "Golden Hour Memories"
+            > Caption: "Sarah and John enjoying sunset at Malibu Beach on a perfect California evening"
+            > Mood: Peaceful and romantic
+            > Hashtags: #MalibuSunset #CaliforniaLove #BeachLife
+
+            ### Tips
+
+            - Use high-quality images for better results
+            - For Enhanced mode: Detect and identify faces first in other tabs
+            - Photos with GPS data get location-aware captions
+            - Generated captions can be edited for perfect wording
+
+            ### Requirements
+
+            **Basic Mode:**
+            - Ollama running with `llava:7b`
+
+            **Enhanced Mode:**
+            - Ollama with `llava:7b` and `llama3`
+            - DSPy installed (`uv add dspy-ai`)
+            - Optionally: Face recognition for name integration
+
+            ### Processing Time
+
+            - Basic: ~30 seconds per image
+            - Enhanced: ~40 seconds per image (+10s for reasoning)
+            - Runs locally (no cloud upload)
+            - GPU acceleration recommended
+            """)
+
+    # ============================================================================
+    # TAB 4: QDRANT STORAGE
+    # ============================================================================
+    with qdrant_tab:
+        st.header("🗄️ Qdrant Vector Database")
+        st.markdown("Store and search photos with embeddings, EXIF, faces, and captions")
+
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+            st.subheader("⚙️ Database Connection")
+
+            # Initialize Qdrant
+            if st.button("🔌 Connect to Qdrant", type="primary"):
+                if initialize_qdrant_store():
+                    st.rerun()
+
+            if st.session_state.qdrant_store:
+                stats = st.session_state.qdrant_store.get_statistics()
+                st.success("✅ Qdrant connected")
+
+                # Display stats
+                col_stat1, col_stat2, col_stat3 = st.columns(3)
+                with col_stat1:
+                    st.metric("Total Photos", stats.get('total_photos', 0))
+                with col_stat2:
+                    st.metric("Total Faces", stats.get('total_faces', 0))
+                with col_stat3:
+                    st.metric("Embedding Dim", stats.get('embedding_dimension', 512))
+
+                st.info(f"Collections: {stats.get('collection_name')}, {stats.get('faces_collection_name', 'detected_faces')}")
+            else:
+                st.warning("⚠️ Not connected to Qdrant")
+
+            st.divider()
+
+            # Save current photo
+            st.subheader("💾 Save Current Photo")
+
+            if st.session_state.processed_image is not None:
+                st.info(f"📸 Current photo ready to save")
+
+                # Show what will be saved
+                with st.expander("📋 Data to be saved"):
+                    data_summary = []
+                    if st.session_state.image_metadata:
+                        data_summary.append("✅ EXIF metadata")
+                    if st.session_state.detected_faces:
+                        data_summary.append(f"✅ {len(st.session_state.detected_faces)} detected faces")
+                    if st.session_state.face_identifications:
+                        data_summary.append(f"✅ {len(st.session_state.face_identifications)} face IDs")
+                    if st.session_state.image_captions:
+                        data_summary.append("✅ Generated captions")
+
+                    for item in data_summary:
+                        st.write(item)
+
+                if st.button("💾 Save to Qdrant", type="primary"):
+                    if not st.session_state.qdrant_store:
+                        st.error("❌ Connect to Qdrant first!")
+                    elif not st.session_state.current_photo_path:
+                        st.error("❌ No photo path available")
+                    else:
+                        try:
+                            with st.spinner("Saving photo to Qdrant..."):
+                                # Save photo
+                                point_id = st.session_state.qdrant_store.store_photo(
+                                    photo_path=st.session_state.current_photo_path,
+                                    face_embedding=None,  # Could add face embeddings here
+                                    exif_metadata=st.session_state.image_metadata,
+                                    detected_faces=st.session_state.detected_faces,
+                                    face_identifications=st.session_state.face_identifications,
+                                    captions=st.session_state.image_captions
+                                )
+                                st.success(f"✅ Photo saved! ID: {point_id[:8]}...")
+
+                                # Save individual faces if available
+                                if st.session_state.detected_faces:
+                                    with st.spinner("Saving individual faces..."):
+                                        face_ids = st.session_state.qdrant_store.store_individual_faces(
+                                            photo_id=point_id,
+                                            photo_path=st.session_state.current_photo_path,
+                                            detected_faces=st.session_state.detected_faces,
+                                            face_identifications=st.session_state.face_identifications,
+                                            exif_metadata=st.session_state.image_metadata
+                                        )
+                                        st.success(f"✅ Saved {len(face_ids)} individual faces!")
+
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error saving: {str(e)}")
+                            with st.expander("🔍 Error details"):
+                                st.code(str(e))
+            else:
+                st.info("👈 Detect faces in a photo first, then save here")
+
+        with col2:
+            st.subheader("🔍 Search & Browse")
+
+            if st.session_state.qdrant_store:
+                search_type = st.radio(
+                    "Search Type:",
+                    ["📸 All Photos", "👤 By Person", "📍 By Location", "👥 All Faces", "🔎 Faces by Person"]
+                )
+
+                if search_type == "📸 All Photos":
+                    if st.button("🔍 Get All Photos"):
+                        photos = st.session_state.qdrant_store.get_all_photos(limit=50)
+                        if photos:
+                            st.success(f"Found {len(photos)} photos")
+                            for photo in photos[:10]:
+                                with st.expander(f"📷 {photo['filename']}"):
+                                    st.write(f"**People**: {', '.join(photo.get('people', [])) or 'None'}")
+                                    st.write(f"**Faces**: {photo.get('num_faces', 0)}")
+                                    if photo.get('datetime'):
+                                        st.write(f"**Date**: {photo['datetime']}")
+                        else:
+                            st.info("No photos in database yet")
+
+                elif search_type == "👤 By Person":
+                    person_name = st.text_input("Person name:")
+                    if st.button("🔍 Search") and person_name:
+                        photos = st.session_state.qdrant_store.search_by_person(person_name, limit=20)
+                        if photos:
+                            st.success(f"Found {len(photos)} photos with {person_name}")
+                            for photo in photos:
+                                with st.expander(f"📷 {photo['filename']}"):
+                                    st.write(f"**People**: {', '.join(photo.get('people', []))}")
+                                    if photo.get('datetime'):
+                                        st.write(f"**Date**: {photo['datetime']}")
+                        else:
+                            st.info(f"No photos found with {person_name}")
+
+                elif search_type == "📍 By Location":
+                    col_lat, col_lon = st.columns(2)
+                    with col_lat:
+                        lat = st.number_input("Latitude:", value=37.7749)
+                    with col_lon:
+                        lon = st.number_input("Longitude:", value=-122.4194)
+                    radius = st.slider("Radius (km):", 1, 100, 10)
+
+                    if st.button("🔍 Search"):
+                        photos = st.session_state.qdrant_store.search_by_location(lat, lon, radius)
+                        if photos:
+                            st.success(f"Found {len(photos)} photos within {radius}km")
+                            for photo in photos:
+                                with st.expander(f"📷 {photo['filename']} ({photo['distance_km']}km away)"):
+                                    st.write(f"**Location**: {photo['location']['lat']:.4f}, {photo['location']['lon']:.4f}")
+                                    st.write(f"**People**: {', '.join(photo.get('metadata', {}).get('people_names', []))}")
+                        else:
+                            st.info(f"No photos found within {radius}km")
+
+                elif search_type == "👥 All Faces":
+                    if st.button("🔍 Get All Faces"):
+                        faces = st.session_state.qdrant_store.get_all_faces(limit=50)
+                        if faces:
+                            st.success(f"Found {len(faces)} faces")
+
+                            # Group by person
+                            from collections import defaultdict
+                            faces_by_person = defaultdict(list)
+                            for face in faces:
+                                person = face.get('person_name', 'Unknown')
+                                faces_by_person[person].append(face)
+
+                            # Display grouped by person
+                            for person, person_faces in sorted(faces_by_person.items()):
+                                with st.expander(f"👤 {person} ({len(person_faces)} faces)"):
+                                    for face in person_faces[:5]:  # Show first 5
+                                        st.write(f"📷 {face['filename']} - Face #{face['face_index']}")
+                                        if face.get('datetime'):
+                                            st.write(f"📅 {face['datetime']}")
+                                        if face.get('confidence'):
+                                            st.write(f"✓ Confidence: {face['confidence']:.2%}")
+                                        st.divider()
+                        else:
+                            st.info("No faces in database yet")
+
+                elif search_type == "🔎 Faces by Person":
+                    person_name = st.text_input("Person name:", key="face_search_person")
+                    if st.button("🔍 Search Faces") and person_name:
+                        faces = st.session_state.qdrant_store.search_faces_by_person(person_name, limit=50)
+                        if faces:
+                            st.success(f"Found {len(faces)} faces of {person_name}")
+
+                            for face in faces[:10]:  # Show first 10
+                                with st.expander(f"📷 {face['filename']} - Face #{face['face_index']}"):
+                                    st.write(f"**Person**: {face['person_name']}")
+                                    if face.get('confidence'):
+                                        st.write(f"**Confidence**: {face['confidence']:.2%}")
+                                    if face.get('datetime'):
+                                        st.write(f"**Date**: {face['datetime']}")
+                                    if face.get('bbox'):
+                                        bbox = face['bbox']
+                                        st.write(f"**Location in photo**: ({bbox['x']}, {bbox['y']}) - {bbox['w']}×{bbox['h']}px")
+                        else:
+                            st.info(f"No faces found for {person_name}")
+            else:
+                st.warning("⚠️ Connect to Qdrant to search photos")
+
+        st.divider()
+
+        with st.expander("ℹ️ About Qdrant Storage"):
+            st.markdown("""
+            ### What is Qdrant?
+
+            Qdrant is a vector database that stores your photos with:
+            - **Face embeddings** (512D vectors for similarity search)
+            - **EXIF metadata** (GPS, timestamp, camera info)
+            - **Detected faces** (bounding boxes, confidence)
+            - **Face identifications** (names, confidence scores)
+            - **Generated captions** (LLaVA, DSPy)
+
+            ### Features
+
+            - ✅ **Semantic search** by face similarity
+            - ✅ **Search by person** name
+            - ✅ **Geospatial search** by location
+            - ✅ **Browse all photos** in database
+            - ✅ **Persistent storage** (survives app restart)
+
+            ### Workflow
+
+            1. **Detect faces** in Face Detection tab
+            2. **Identify people** in Face Identification tab
+            3. **Generate captions** in Image Captions tab
+            4. **Save to Qdrant** in this tab
+            5. **Search and browse** your photo collection
+
+            ### Requirements
+
+            - Qdrant running (Docker):
+              ```bash
+              docker start <qdrant_container>
+              ```
+            - Verify at: http://localhost:6333
+            """)
+
+    # ============================================================================
+    # TAB 5: FACE DATABASE MANAGEMENT
     # ============================================================================
     with database_tab:
         st.header("💾 Face Database Management")

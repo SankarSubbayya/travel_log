@@ -44,3 +44,37 @@ site/
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Personal/Sensitive Data - DO NOT COMMIT
+face_database/*/           # Personal face photos
+personal_photos/           # Personal photos
+extracted_faces/           # Extracted face images
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.HEIC
+
+# Exception: Allow example/doc images
+!examples/**/*.jpg
+!examples/**/*.png
+!docs/images/*.jpg
+!docs/images/*.png
+
+# Large Model Files
+*.pkl                      # DeepFace model cache files
+*.h5                       # Keras models
+*.pth                      # PyTorch models
+*.ckpt                     # Checkpoints
+
+# Qdrant/Vector DB
+qdrant_storage/
+.qdrant/
+
+# Datasets
+datasets/
+data/
+
+# Test outputs
+test_outputs/
+results/

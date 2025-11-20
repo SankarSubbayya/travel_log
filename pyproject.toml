@@ -13,6 +13,12 @@ dependencies = [
     "numpy>=1.24.0",
     "tf-keras>=2.20.0",
     "streamlit>=1.28.0",
+    "transformers>=4.30.0",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "requests>=2.31.0",
+    "dspy-ai>=3.0.4",
+    "qdrant-client>=1.15.1",
 ]
 
 [build-system]

@@ -35,6 +35,7 @@ from .face_detector import FaceDetector, extract_faces_from_photo
 from .face_embeddings import FaceEmbeddings, generate_face_embedding
 from .face_labeler import FaceLabeler, identify_faces_in_photos
 from .face_manager import TravelLogFaceManager, create_face_manager
+from .caption_generator import CaptionGenerator
 from .image_utils import (
     convert_heic_to_jpg,
     is_heic_file,
@@ -62,6 +63,7 @@ __all__ = [
     'FaceEmbeddings',
     'FaceLabeler',
     'TravelLogFaceManager',
+    'CaptionGenerator',
     'extract_faces_from_photo',
     'generate_face_embedding',
     'identify_faces_in_photos',

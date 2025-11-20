@@ -16,6 +16,7 @@ from datetime import datetime
 from .face_detector import FaceDetector
 from .face_embeddings import FaceEmbeddings
 from .face_labeler import FaceLabeler
+from .caption_generator import CaptionGenerator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,35 +38,38 @@ class TravelLogFaceManager:
         workspace_dir: Union[str, Path],
         database_dir: Optional[Union[str, Path]] = None,
         detector_backend: str = 'mtcnn',
-        recognition_model: str = 'Facenet512'
+        recognition_model: str = 'Facenet512',
+        enable_caption_generator: bool = False
     ):
         """
         Initialize the TravelLogFaceManager.
-        
+
         Args:
             workspace_dir: Working directory for all face operations
             database_dir: Directory for known faces database (default: workspace_dir/face_database)
             detector_backend: Face detection backend to use
             recognition_model: Face recognition model to use
+            enable_caption_generator: Whether to enable image caption generation (LLaVA)
         """
         self.workspace_dir = Path(workspace_dir)
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Set up directory structure
         self.faces_dir = self.workspace_dir / "extracted_faces"
         self.embeddings_dir = self.workspace_dir / "embeddings"
         self.results_dir = self.workspace_dir / "results"
-        
-        for dir_path in [self.faces_dir, self.embeddings_dir, self.results_dir]:
+        self.captions_dir = self.workspace_dir / "captions"
+
+        for dir_path in [self.faces_dir, self.embeddings_dir, self.results_dir, self.captions_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
-        
+
         # Set up database directory
         if database_dir is None:
             self.database_dir = self.workspace_dir / "face_database"
         else:
             self.database_dir = Path(database_dir)
         self.database_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Initialize components
         self.detector = FaceDetector(detector_backend=detector_backend)
         self.embeddings = FaceEmbeddings(
@@ -77,7 +81,16 @@ class TravelLogFaceManager:
             model_name=recognition_model,
             detector_backend=detector_backend
         )
-        
+
+        # Initialize caption generator if enabled
+        self.caption_generator = None
+        if enable_caption_generator:
+            try:
+                self.caption_generator = CaptionGenerator()
+                logger.info("Caption generator initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize caption generator: {e}")
+
         logger.info(f"Initialized TravelLogFaceManager at {workspace_dir}")
     
     def process_photo(
@@ -85,23 +98,25 @@ class TravelLogFaceManager:
         image_path: Union[str, Path],
         extract_faces: bool = True,
         identify_faces: bool = True,
-        generate_embeddings: bool = True
+        generate_embeddings: bool = True,
+        generate_captions: bool = False
     ) -> Dict:
         """
-        Process a single photo - extract, identify, and embed faces.
-        
+        Process a single photo - extract, identify, embed faces, and optionally generate captions.
+
         Args:
             image_path: Path to the photo
             extract_faces: Whether to extract faces
             identify_faces: Whether to identify faces
             generate_embeddings: Whether to generate embeddings
-            
+            generate_captions: Whether to generate image captions
+
         Returns:
             Dictionary with processing results
         """
         image_path = Path(image_path)
         logger.info(f"Processing photo: {image_path.name}")
-        
+
         result = {
             'source_image': str(image_path),
             'timestamp': datetime.now().isoformat(),
@@ -166,10 +181,79 @@ class TravelLogFaceManager:
                     face_data['embedding_error'] = str(e)
             
             result['faces'].append(face_data)
-        
+
+        # Step 4: Generate captions
+        if generate_captions and self.caption_generator:
+            try:
+                logger.info("Generating captions...")
+                captions = self.caption_generator.generate_all(image_path)
+                result['captions'] = captions
+
+                # Save captions to file
+                import json
+                caption_file = self.captions_dir / f"{image_path.stem}_captions.json"
+                with open(caption_file, 'w') as f:
+                    json.dump(captions, f, indent=2)
+                result['caption_file'] = str(caption_file)
+            except Exception as e:
+                logger.error(f"Error generating captions: {str(e)}")
+                result['caption_error'] = str(e)
+
         logger.info(f"Processed {len(face_paths)} faces from {image_path.name}")
         return result
     
+    def generate_image_captions(
+        self,
+        image_path: Union[str, Path],
+        caption_type: str = 'all'
+    ) -> Dict[str, str]:
+        """
+        Generate captions and titles for an image.
+
+        Args:
+            image_path: Path to the image
+            caption_type: Type of captions to generate
+                         'all' = caption + title + travel_caption
+                         'caption' = detailed caption only
+                         'title' = short title only
+                         'travel' = travel-specific caption only
+
+        Returns:
+            Dictionary with generated captions
+
+        Raises:
+            ValueError: If caption generator is not initialized
+        """
+        if not self.caption_generator:
+            raise ValueError("Caption generator not initialized. Enable it when creating the manager.")
+
+        image_path = Path(image_path)
+        logger.info(f"Generating captions for: {image_path.name}")
+
+        try:
+            from PIL import Image
+            image = Image.open(image_path)
+
+            captions = {}
+            if caption_type in ['all', 'caption']:
+                captions['caption'] = self.caption_generator.generate_caption(image)
+            if caption_type in ['all', 'title']:
+                captions['title'] = self.caption_generator.generate_title(image)
+            if caption_type in ['all', 'travel']:
+                captions['travel_caption'] = self.caption_generator.generate_travel_caption(image)
+
+            # Save captions to file
+            import json
+            caption_file = self.captions_dir / f"{image_path.stem}_captions.json"
+            with open(caption_file, 'w') as f:
+                json.dump(captions, f, indent=2)
+            logger.info(f"Saved captions to {caption_file}")
+
+            return captions
+        except Exception as e:
+            logger.error(f"Error generating captions: {str(e)}")
+            raise
+
     def process_photos_batch(
         self,
         image_paths: List[Union[str, Path]],
