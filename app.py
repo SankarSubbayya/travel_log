@@ -18,6 +18,8 @@ import shutil
 import traceback
 from typing import List, Dict
 import numpy as np
+import hashlib
+from datetime import datetime
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -199,6 +201,42 @@ def initialize_dspy_generator():
         st.error("**Details:**\n" + traceback.format_exc())
         return False
 
+def save_uploaded_photo(uploaded_file, metadata=None):
+    """
+    Save uploaded photo to permanent storage directory.
+
+    Args:
+        uploaded_file: Streamlit UploadedFile object
+        metadata: Optional metadata dict with datetime info
+
+    Returns:
+        Path to saved file
+    """
+    # Create storage directory
+    storage_dir = Path("uploaded_photos")
+    storage_dir.mkdir(exist_ok=True)
+
+    # Generate unique filename using hash + original name
+    file_content = uploaded_file.getvalue()
+    file_hash = hashlib.md5(file_content).hexdigest()[:8]
+
+    # Use datetime from metadata or current time
+    if metadata and 'datetime' in metadata:
+        timestamp = metadata['datetime'].strftime("%Y%m%d_%H%M%S")
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Create filename
+    original_name = Path(uploaded_file.name).stem
+    extension = Path(uploaded_file.name).suffix
+    filename = f"{timestamp}_{original_name}_{file_hash}{extension}"
+
+    # Save file
+    save_path = storage_dir / filename
+    save_path.write_bytes(file_content)
+
+    return str(save_path)
+
 def initialize_qdrant_store():
     """Initialize Qdrant vector database connection."""
     try:
@@ -364,11 +402,10 @@ def identify_faces(face_images: List[Dict], confidence_threshold: float = 0.6) -
     # Log for debugging
     st.info(f"🔍 Identifying {len(face_images)} faces using Qdrant reference_faces collection...")
 
-    # Convert confidence threshold to distance threshold
-    # For VGG-Face cosine distance: confidence = 1 - distance
-    # So: distance_threshold = 1 - confidence_threshold
-    # But we use a more lenient threshold for better matches
-    distance_threshold = 0.25  # Works well for VGG-Face
+    # Distance threshold for VGG-Face cosine similarity
+    # Lower distance = better match (0.0 = perfect match, 1.0 = no similarity)
+    # Set to 0.60 to handle masked faces, different angles, and lighting conditions
+    distance_threshold = 0.60  # Very lenient threshold for real-world photos (masks, angles, lighting)
 
     for idx, face_data in enumerate(face_images):
         try:
@@ -394,20 +431,23 @@ def identify_faces(face_images: List[Dict], confidence_threshold: float = 0.6) -
 
             # Search in Qdrant reference_faces collection
             if st.session_state.qdrant_store:
-                search_results = st.session_state.qdrant_store.client.search(
+                query_response = st.session_state.qdrant_store.client.query_points(
                     collection_name="reference_faces",
-                    query_vector=embedding,
+                    query=embedding,
                     limit=3
                 )
 
-                if search_results:
-                    best_match = search_results[0]
+                if query_response.points:
+                    best_match = query_response.points[0]
                     person_name = best_match.payload['person_name']
                     score = best_match.score  # Cosine similarity score (0-1, higher is better)
                     distance = 1 - score  # Convert to distance
 
                     # Convert distance to confidence percentage
                     confidence = max(0, 1 - distance)
+
+                    # Debug info
+                    st.info(f"Face {idx+1}: Best match = {person_name}, Distance = {distance:.4f}, Threshold = {distance_threshold}")
 
                     if distance <= distance_threshold:
                         results[idx] = {
@@ -421,7 +461,9 @@ def identify_faces(face_images: List[Dict], confidence_threshold: float = 0.6) -
                             'match': 'Unknown',
                             'confidence': confidence,
                             'distance': distance,
-                            'status': 'low_confidence'
+                            'status': 'low_confidence',
+                            'debug_best_match': person_name,  # Show who was closest
+                            'debug_distance': distance
                         }
                 else:
                     results[idx] = {
@@ -448,15 +490,18 @@ def process_image(image_file, detector, min_confidence=0.9):
     try:
         # Determine file extension
         file_ext = Path(image_file.name).suffix.lower()
-        
-        # Save uploaded file to temporary location
+
+        # Save uploaded file to temporary location for processing
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
             tmp_file.write(image_file.getvalue())
             tmp_path = tmp_file.name
-        
+
         # Extract EXIF metadata first (before conversion)
         with st.spinner("Reading photo metadata..."):
             metadata = get_complete_metadata(tmp_path)
+
+        # Save to permanent storage
+        permanent_path = save_uploaded_photo(image_file, metadata)
         
         # Convert HEIC to JPEG if necessary
         if file_ext in ['.heic', '.heif']:
@@ -483,19 +528,20 @@ def process_image(image_file, detector, min_confidence=0.9):
                 w = facial_area.get('w', 0)
                 h = facial_area.get('h', 0)
 
-                # Use face numpy array from DeepFace extraction if available
-                if 'face' in face:
-                    # Convert numpy array to PIL Image
-                    face_array = face['face']
-                    # DeepFace returns normalized 0-1 or 0-255 arrays
-                    if face_array.max() <= 1.0:
-                        face_array = (face_array * 255).astype(np.uint8)
-                    else:
-                        face_array = face_array.astype(np.uint8)
-                    face_img = Image.fromarray(face_array)
-                else:
-                    # Fallback: crop from original image
-                    face_img = img.crop((x, y, x + w, y + h))
+                # Crop from original image with padding for better face extraction
+                # Add 30% padding around detected face for better identification
+                img_width, img_height = img.size
+                padding = 0.3
+
+                pad_w = int(w * padding)
+                pad_h = int(h * padding)
+
+                x1 = max(0, x - pad_w)
+                y1 = max(0, y - pad_h)
+                x2 = min(img_width, x + w + pad_w)
+                y2 = min(img_height, y + h + pad_h)
+
+                face_img = img.crop((x1, y1, x2, y2))
 
                 face_images.append({
                     'image': face_img,
@@ -503,15 +549,18 @@ def process_image(image_file, detector, min_confidence=0.9):
                     'confidence': face.get('confidence', 1.0)
                 })
             
-            # Don't clean up temp file yet - we might need it for Qdrant
-            # Path(tmp_path).unlink()
+            # Clean up temp file - we have permanent storage
+            try:
+                Path(tmp_path).unlink()
+            except:
+                pass
 
             return {
                 'original_image': img,
                 'faces': face_images,
                 'num_faces': len(filtered_faces),
                 'metadata': metadata,
-                'temp_path': tmp_path  # Keep path for Qdrant storage
+                'temp_path': permanent_path  # Use permanent path for Qdrant storage
             }
             
     except Exception as e:
@@ -521,14 +570,14 @@ def process_image(image_file, detector, min_confidence=0.9):
 
 def main():
     # Header
-    st.title("📸 Travel Log Face Recognition")
+    st.title("📸 Travel Log")
     st.markdown("**Upload photos, detect faces, and identify them**")
 
     # Create tabs for different features
     detection_tab, identification_tab, caption_tab, qdrant_tab, database_tab = st.tabs([
         "🔍 Face Detection",
         "🎯 Face Identification",
-        "✍️ Image Captions",
+        "📔 Travel Log",
         "🗄️ Qdrant Storage",
         "💾 Face Database"
     ])
@@ -538,36 +587,29 @@ def main():
         st.header("⚙️ Settings")
         
         # Detection backend selection
-        backend_options = ['opencv', 'ssd', 'mtcnn', 'retinaface', 'dlib']
-        default_backend = config.get('face_detection', {}).get('default_backend', 'mtcnn')
-        
-        if default_backend not in backend_options:
-            default_backend = 'mtcnn'
-        
+        backend_options = ['retinaface', 'mtcnn']
+
         backend = st.selectbox(
             "Detection Backend",
             backend_options,
-            index=backend_options.index(default_backend),
+            index=0,  # Default to retinaface
             help="Choose the face detection algorithm"
         )
-        
+
         st.markdown("""
         **Backend Guide:**
-        - **opencv**: Fast, good for testing
-        - **ssd**: Fast, balanced
-        - **mtcnn**: Recommended, accurate
-        - **retinaface**: Most accurate, slower
-        - **dlib**: Alternative, accurate
+        - **retinaface**: Most accurate (recommended)
+        - **mtcnn**: Fast and reliable
         """)
         
         # Confidence threshold
         min_confidence = st.slider(
             "Minimum Confidence",
-            min_value=0.5,
+            min_value=0.3,
             max_value=1.0,
-            value=0.9,
+            value=0.6,
             step=0.05,
-            help="Filter faces below this confidence threshold"
+            help="Lower = detect more faces (even with masks/angles). Higher = only clear faces"
         )
         
         st.divider()
@@ -829,97 +871,63 @@ Current Configuration:
         col1, col2 = st.columns([1, 1])
 
         with col1:
-            st.subheader("Database Setup")
+            st.subheader("Face Recognition")
 
-            database_path = st.text_input(
-                "Face Database Path",
-                value="./face_database",
-                help="Path to directory containing labeled face images"
-            )
-
-            model_options = ['VGG-Face', 'Facenet512', 'Facenet', 'ArcFace', 'DeepFace',
-                           'OpenFace', 'DeepID', 'Dlib', 'SFace']
-
-            recognition_model = st.selectbox(
-                "Recognition Model",
-                model_options,
-                index=0,
-                help="Face recognition model to use (VGG-Face recommended - works best with GPU)"
-            )
-
-            if st.button("⚙️ Initialize Identification", type="primary"):
-                if initialize_labeler(database_path, recognition_model, 'cosine'):
-                    st.success(f"✅ Initialized with {recognition_model} model")
-                    st.rerun()
-
-            st.markdown("---")
-
-            st.markdown("**Model Performance Guide:**")
+            st.info("🤖 Using DeepFace with VGG-Face model")
             st.markdown("""
-            - **Facenet512**: Balanced, recommended (512D embeddings)
-            - **Facenet**: Fast, accurate (128D embeddings)
-            - **ArcFace**: Very fast, accurate
-            - **VGG-Face**: Accurate, requires more computation
-            - **DeepFace**: Balanced
+            **Recognition Method:**
+            - Model: VGG-Face (4096D embeddings)
+            - Search: Qdrant vector similarity
+            - Distance: Cosine similarity
+            - Threshold: 0.40
             """)
 
+            # Show reference faces count
+            if st.session_state.qdrant_store:
+                try:
+                    collection_info = st.session_state.qdrant_store.client.get_collection("reference_faces")
+                    num_faces = collection_info.points_count
+                    st.success(f"✅ {num_faces} reference faces in database")
+                except:
+                    st.warning("⚠️ Reference faces collection not found")
+            else:
+                st.warning("⚠️ Connect to Qdrant first")
+
         with col2:
-            st.subheader("Identification Settings")
+            st.subheader("Quick Actions")
 
-            confidence_threshold = st.slider(
-                "Match Confidence Threshold",
-                min_value=0.3,
-                max_value=1.0,
-                value=0.6,
-                step=0.05,
-                help="Minimum confidence to accept a match"
-            )
-
-            show_top_matches = st.checkbox(
-                "Show top 3 matches",
-                value=False,
-                help="Show all top candidates, not just the best match"
-            )
+            # Identify faces button
+            if st.button("🔍 Identify Faces", type="primary", use_container_width=True):
+                if not st.session_state.detected_faces:
+                    st.warning("⚠️ No faces detected. Upload a photo in Face Detection tab first.")
+                elif not st.session_state.qdrant_store:
+                    st.warning("⚠️ Connect to Qdrant first (in sidebar)")
+                else:
+                    with st.spinner("Identifying faces using DeepFace + Qdrant..."):
+                        identifications = identify_faces(st.session_state.detected_faces)
+                        st.session_state.face_identifications = identifications
+                        st.rerun()
 
             st.divider()
 
-            # Database status
-            if st.session_state.labeler:
-                st.success("✅ Recognition model loaded")
-                st.info(f"Database: {st.session_state.current_db_path}")
+            # Show identified faces summary
+            if st.session_state.face_identifications:
+                matched = sum(1 for i in st.session_state.face_identifications.values()
+                            if i.get('match') not in ['Unknown', 'Error'])
+                total = len(st.session_state.face_identifications)
+                st.metric("Identified", f"{matched}/{total}")
 
-                # Check database content
-                db_path = Path(st.session_state.current_db_path)
-                if db_path.exists():
-                    people = [d.name for d in db_path.iterdir() if d.is_dir()]
-                    if people:
-                        st.metric("People in Database", len(people))
-                        with st.expander("View people in database"):
-                            for person in sorted(people):
-                                person_dir = db_path / person
-                                img_count = len([f for f in person_dir.glob('*') if f.is_file()])
-                                st.write(f"• {person} ({img_count} images)")
-                    else:
-                        st.warning("⚠️ Database is empty. Add people first.")
-            else:
-                st.warning("⚠️ Initialize identification model first")
+                # List unique people found
+                people = set(i.get('match') for i in st.session_state.face_identifications.values()
+                           if i.get('match') not in ['Unknown', 'Error'])
+                if people:
+                    st.success(f"Found: {', '.join(sorted(people))}")
 
         st.divider()
 
-        # Tab sections
-        id_method_tab1, id_method_tab2 = st.tabs(["📸 Single Photo", "📁 Batch Processing"])
-
-        with id_method_tab1:
-            # Identification section
-            if st.session_state.detected_faces and st.session_state.labeler:
-                st.subheader("Identify Detected Faces")
-
-                if st.button("🎯 Identify All Faces", type="primary"):
-                    with st.spinner("Identifying faces..."):
-                        results = identify_faces(st.session_state.detected_faces, confidence_threshold)
-                        st.session_state.face_identifications = results
-
-                if st.session_state.face_identifications:
+        # Display identified faces
+        if st.session_state.detected_faces:
+            if st.session_state.face_identifications:
                     st.success(f"Identified {len(st.session_state.face_identifications)} face(s)")
 
                     # Display results
@@ -946,6 +954,9 @@ Current Configuration:
 
                                     if match == 'Unknown':
                                         st.warning(f"No match found")
+                                        # Show debug info if available
+                                        if 'debug_best_match' in identification:
+                                            st.caption(f"Closest: {identification['debug_best_match']} (distance: {identification['debug_distance']:.4f})")
                                     elif match == 'Error':
                                         st.error(f"Error: {identification.get('error', 'Unknown')}")
                                     else:
@@ -954,204 +965,194 @@ Current Configuration:
                                             confidence,
                                             text=f"Confidence: {confidence:.1%}"
                                         )
-
-            else:
-                if not st.session_state.detected_faces:
-                    st.info("👈 Detect faces first in the Face Detection tab")
-                else:
-                    st.info("👈 Initialize identification model first")
-
-        with id_method_tab2:
-            # Batch processing section
-            st.subheader("🔄 Batch Process Extracted Faces")
-            st.markdown("Identify all faces in a directory at once")
-
-            batch_faces_dir = st.text_input(
-                "Extracted Faces Directory",
-                value="./extracted_faces",
-                help="Directory containing extracted face images"
-            )
-
-            if st.button("🚀 Start Batch Processing", type="primary"):
-                if not st.session_state.labeler:
-                    st.error("❌ Initialize identification model first!")
-                else:
-                    batch_path = Path(batch_faces_dir)
-                    if not batch_path.exists():
-                        st.error(f"❌ Directory not found: {batch_faces_dir}")
-                    else:
-                        with st.spinner("Processing batch..."):
-                            batch_result = process_batch_faces(
-                                batch_path,
-                                st.session_state.labeler,
-                                confidence_threshold
-                            )
-                            st.session_state.batch_results = batch_result
-
-            # Display batch results
-            if st.session_state.batch_results:
-                result = st.session_state.batch_results
-
-                if result['status'] == 'no_files':
-                    st.warning("⚠️ No face images found in directory")
-                else:
-                    summary = result['summary']
-
-                    # Summary metrics
-                    col1, col2, col3, col4, col5 = st.columns(5)
-                    with col1:
-                        st.metric("Total Processed", summary['total'])
-                    with col2:
-                        st.metric("✅ Identified", summary['identified'])
-                    with col3:
-                        st.metric("⚠️ Low Confidence", summary['low_confidence'])
-                    with col4:
-                        st.metric("❌ No Match", summary['no_match'])
-                    with col5:
-                        st.metric("⚠️ Errors", summary['errors'])
-
-                    st.divider()
-
-                    # Results table
-                    st.subheader("📊 Detailed Results")
-
-                    # Create dataframe for display
-                    import pandas as pd
-                    df = pd.DataFrame(result['results'])
-
-                    # Filter options
-                    col_f1, col_f2, col_f3 = st.columns(3)
-                    with col_f1:
-                        filter_status = st.multiselect(
-                            "Filter by Status",
-                            options=['identified', 'low_confidence', 'no_match', 'error'],
-                            default=['identified', 'low_confidence', 'no_match']
-                        )
-                    with col_f2:
-                        show_confidence_min = st.slider(
-                            "Min Confidence to Show",
-                            min_value=0.0,
-                            max_value=1.0,
-                            value=0.0,
-                            step=0.1
-                        )
-                    with col_f3:
-                        if st.button("📥 Download Results"):
-                            csv_data = df.to_csv(index=False)
-                            st.download_button(
-                                label="Download CSV",
-                                data=csv_data,
-                                file_name="batch_identification_results.csv",
-                                mime="text/csv"
-                            )
-
-                    # Filter and display
-                    filtered_df = df[df['status'].isin(filter_status)]
-                    filtered_df = filtered_df[filtered_df['confidence'] >= show_confidence_min]
-
-                    st.dataframe(
-                        filtered_df,
-                        use_container_width=True,
-                        height=400,
-                        hide_index=True
-                    )
-
-                    # Identified faces section
-                    if summary['identified'] > 0:
-                        st.divider()
-                        st.subheader(f"✅ Identified Faces ({summary['identified']})")
-
-                        identified_results = [r for r in result['results'] if r['status'] == 'identified']
-
-                        # Group by person
-                        from collections import defaultdict
-                        by_person = defaultdict(list)
-                        for r in identified_results:
-                            by_person[r['match']].append(r)
-
-                        for person_name in sorted(by_person.keys()):
-                            with st.expander(f"👤 {person_name} ({len(by_person[person_name])} faces)"):
-                                person_faces = by_person[person_name]
-                                cols = st.columns(min(3, len(person_faces)))
-
-                                for idx, face_result in enumerate(person_faces):
-                                    with cols[idx % 3]:
-                                        st.write(f"**{face_result['face_file']}**")
-                                        st.metric(
-                                            "Confidence",
-                                            f"{face_result['confidence']:.1%}"
-                                        )
-
-            else:
-                st.info("Upload a directory with extracted faces and click 'Start Batch Processing'")
+        else:
+            st.info("👈 Upload and detect faces in the Face Detection tab, then click 'Identify Faces'")
 
     # ============================================================================
-    # TAB 3: IMAGE CAPTIONS
+    # TAB 3: TRAVEL LOG
     # ============================================================================
     with caption_tab:
-        st.header("✍️ Image Captions & Titles")
-        st.markdown("Generate AI-powered captions and titles for your travel photos using LLaVA")
+        st.header("📔 Travel Log")
+        st.markdown("View all your travel photos with captions, locations, and identified people")
 
-        col1, col2 = st.columns([1, 1])
+        # Check if Qdrant is connected
+        if st.session_state.qdrant_store is None:
+            st.warning("⚠️ Please connect to Qdrant first")
+            st.info("👈 Click 'Connect to Qdrant' in the sidebar to view your travel log")
+        else:
+            # Get all photos from Qdrant
+            try:
+                # Fetch all photos
+                all_points = st.session_state.qdrant_store.client.scroll(
+                    collection_name="travel_photos",
+                    limit=100,
+                    with_payload=True,
+                    with_vectors=False
+                )
 
-        with col1:
-            st.subheader("📤 Upload Image for Captions")
+                photos = all_points[0] if all_points else []
 
-            # Caption mode selection
-            caption_mode = st.radio(
-                "Caption Generation Mode:",
-                ["🔍 Basic (LLaVA only)", "🧠 Enhanced (DSPy + LLaVA)"],
-                help="Basic: Simple visual description | Enhanced: Context-aware with face names, location, mood"
-            )
-
-            use_dspy = "Enhanced" in caption_mode
-            st.session_state.use_dspy = use_dspy
-
-            # Model selection
-            vision_model = st.selectbox(
-                "Vision Model",
-                options=["llava:7b", "qwen2.5vl:7b"],
-                index=0,
-                help="Select the Ollama vision model to use for caption generation"
-            )
-
-            # Initialize appropriate generator
-            if use_dspy:
-                if st.button("🚀 Load Enhanced Caption Generator", type="primary"):
-                    if initialize_dspy_generator():
-                        st.success("✅ DSPy + LLaVA generator loaded!")
-
-                if st.session_state.dspy_generator:
-                    st.success("✅ Enhanced caption generator is ready")
-                    st.info("💡 Will use face recognition, GPS, and timestamp data")
+                if not photos:
+                    st.info("📷 No photos in your travel log yet!")
+                    st.markdown("""
+                    **To add photos to your travel log:**
+                    1. Upload a photo in the **Face Detection** tab
+                    2. Detect faces (optional)
+                    3. Identify people (optional) in **Face Identification** tab
+                    4. Save to Qdrant in **Qdrant Storage** tab
+                    """)
                 else:
-                    st.info("💡 Click 'Load Enhanced Caption Generator' for smart captions")
-            else:
-                if st.button("🚀 Load Caption Generator", type="primary"):
-                    if initialize_caption_generator(model_name=vision_model):
-                        st.success(f"✅ Caption generator loaded with {vision_model}!")
+                    st.success(f"📸 Found {len(photos)} photos in your travel log")
 
-                if st.session_state.caption_generator:
-                    current_model = st.session_state.caption_generator.model_name
-                    st.success(f"✅ Caption generator is ready (using {current_model})")
+                    # Sort by datetime if available
+                    photos_sorted = sorted(
+                        photos,
+                        key=lambda p: p.payload.get('datetime', ''),
+                        reverse=True
+                    )
+
+                    # Display each photo as a travel log entry
+                    for idx, point in enumerate(photos_sorted):
+                        payload = point.payload
+
+                        with st.container():
+                            st.divider()
+
+                            # Create columns: image, details, delete button
+                            col_img, col_details, col_delete = st.columns([1, 3, 0.3])
+
+                            with col_img:
+                                # Display photo if filepath exists and is readable
+                                photo_path = payload.get('filepath')
+                                image_displayed = False
+
+                                if photo_path:
+                                    try:
+                                        photo_path_obj = Path(photo_path)
+                                        if photo_path_obj.exists() and photo_path_obj.is_file():
+                                            img = Image.open(photo_path)
+                                            st.image(img, use_container_width=True)
+                                            image_displayed = True
+                                    except (PermissionError, FileNotFoundError, Exception):
+                                        pass
+
+                                if not image_displayed:
+                                    st.info("📷 No preview")
+
+                            with col_details:
+                                # Title
+                                captions = payload.get('captions', {})
+                                if captions and 'title' in captions:
+                                    st.markdown(f"**{captions['title']}**")
+                                else:
+                                    st.markdown(f"**{payload.get('filename', 'Untitled')}**")
+
+                                # Caption
+                                if captions and 'caption' in captions:
+                                    st.caption(captions['caption'])
+
+                                # Compact metadata
+                                meta_parts = []
+
+                                if 'datetime' in payload:
+                                    meta_parts.append(f"📅 {payload['datetime']}")
+
+                                people = payload.get('people_names', [])
+                                if people:
+                                    meta_parts.append(f"👥 {', '.join(people)}")
+
+                                if 'latitude' in payload and 'longitude' in payload:
+                                    lat, lon = payload['latitude'], payload['longitude']
+                                    maps = format_gps_for_maps(lat, lon)
+                                    meta_parts.append(f"[📍 Map]({maps['google_maps']})")
+
+                                if meta_parts:
+                                    st.markdown(" • ".join(meta_parts))
+
+                            with col_delete:
+                                # Delete button
+                                if st.button("🗑️", key=f"delete_{point.id}", help="Delete this photo"):
+                                    try:
+                                        # Delete from Qdrant database
+                                        st.session_state.qdrant_store.client.delete(
+                                            collection_name="travel_photos",
+                                            points_selector=[point.id]
+                                        )
+
+                                        # Try to delete file if it exists (ignore errors for temp files)
+                                        if photo_path:
+                                            try:
+                                                photo_path_obj = Path(photo_path)
+                                                if photo_path_obj.exists():
+                                                    photo_path_obj.unlink()
+                                            except (PermissionError, OSError, Exception):
+                                                # Ignore file deletion errors (e.g., /tmp files, permission issues)
+                                                pass
+
+                                        st.success("✅ Photo deleted from database!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Error deleting from database: {str(e)}")
+
+            except Exception as e:
+                st.error(f"❌ Error loading travel log: {str(e)}")
+                st.error(f"Details: {traceback.format_exc()}")
+
+        # Add caption generation for current photo
+        st.divider()
+        st.subheader("✨ Generate Caption for Current Photo")
+
+        # Check if photo is uploaded
+        if st.session_state.processed_image is None:
+            st.info("👈 Please upload a photo in the **Face Detection** tab first")
+        else:
+            col1, col2 = st.columns([1, 1])
+
+            with col1:
+                st.subheader("📷 Current Photo")
+                st.image(st.session_state.processed_image, caption="Uploaded Photo", use_container_width=True)
+
+                # Caption mode selection
+                caption_mode = st.radio(
+                    "Caption Generation Mode:",
+                    ["🔍 Basic (LLaVA only)", "🧠 Enhanced (DSPy + LLaVA)"],
+                    help="Basic: Simple visual description | Enhanced: Context-aware with face names, location, mood"
+                )
+
+                use_dspy = "Enhanced" in caption_mode
+                st.session_state.use_dspy = use_dspy
+
+                # Model selection
+                vision_model = st.selectbox(
+                    "Vision Model",
+                    options=["llava:7b", "qwen2.5vl:7b"],
+                    index=0,
+                    help="Select the Ollama vision model to use for caption generation"
+                )
+
+                # Initialize appropriate generator
+                if use_dspy:
+                    if st.button("🚀 Load Enhanced Caption Generator", type="primary"):
+                        if initialize_dspy_generator():
+                            st.success("✅ DSPy + LLaVA generator loaded!")
+
+                    if st.session_state.dspy_generator:
+                        st.success("✅ Enhanced caption generator is ready")
+                        st.info("💡 Will use face recognition, GPS, and timestamp data")
+                    else:
+                        st.info("💡 Click 'Load Enhanced Caption Generator' for smart captions")
                 else:
-                    st.info("💡 Click 'Load Caption Generator' to enable caption generation")
+                    if st.button("🚀 Load Caption Generator", type="primary"):
+                        if initialize_caption_generator(model_name=vision_model):
+                            st.success(f"✅ Caption generator loaded with {vision_model}!")
 
-            st.divider()
+                    if st.session_state.caption_generator:
+                        current_model = st.session_state.caption_generator.model_name
+                        st.success(f"✅ Caption generator is ready (using {current_model})")
+                    else:
+                        st.info("💡 Click 'Load Caption Generator' to enable caption generation")
 
-            # Determine supported file types
-            supported_types = ['jpg', 'jpeg', 'png', 'bmp', 'gif']
-            if HEIC_SUPPORTED:
-                supported_types.extend(['heic', 'heif'])
-
-            uploaded_file = st.file_uploader(
-                "Choose an image file for captions",
-                type=supported_types,
-                help="Upload a photo to generate captions"
-            )
-
-            if uploaded_file is not None:
-                st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
+                st.divider()
 
                 # Caption generation options
                 caption_type = st.radio(
@@ -1168,20 +1169,8 @@ Current Configuration:
                         st.warning("⚠️ Please load the Caption Generator first!")
                     else:
                         try:
-                            # Load image
-                            image = Image.open(uploaded_file)
-
-                            # Convert HEIC to JPEG if necessary (for file processing)
-                            file_ext = Path(uploaded_file.name).suffix.lower()
-                            if file_ext in ['.heic', '.heif']:
-                                # Convert HEIC file to PIL Image via temp conversion
-                                with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-                                    tmp_file.write(uploaded_file.getvalue())
-                                    tmp_path = tmp_file.name
-                                with st.spinner("Converting HEIC image..."):
-                                    tmp_path = ensure_compatible_image(tmp_path)
-                                image = Image.open(tmp_path)
-                                Path(tmp_path).unlink()
+                            # Use the already processed image from Face Detection tab
+                            image = st.session_state.processed_image
 
                             if use_dspy:
                                 # Enhanced DSPy + LLaVA generation
@@ -1303,6 +1292,28 @@ Current Configuration:
                     mime="application/json"
                 )
 
+                # Save captions to Qdrant
+                st.divider()
+                if st.button("💾 Save Captions to Qdrant", type="primary"):
+                    if st.session_state.qdrant_store is None:
+                        st.warning("⚠️ Please connect to Qdrant first (in the sidebar)")
+                    elif st.session_state.current_photo_id is None:
+                        st.warning("⚠️ Please save the photo to Qdrant first (in Face Identification tab)")
+                    else:
+                        try:
+                            # Update the photo record in Qdrant with captions
+                            from qdrant_client.models import SetPayload
+
+                            st.session_state.qdrant_store.client.set_payload(
+                                collection_name="travel_photos",
+                                payload={"captions": captions},
+                                points=[st.session_state.current_photo_id]
+                            )
+
+                            st.success(f"✅ Captions saved to Qdrant for photo ID: {st.session_state.current_photo_id}")
+                        except Exception as e:
+                            st.error(f"❌ Error saving captions: {str(e)}")
+
             else:
                 st.info("👈 Upload an image and click 'Generate Captions' to see results here.")
 
@@ -1420,11 +1431,68 @@ Current Configuration:
             if st.session_state.processed_image is not None:
                 st.info(f"📸 Current photo ready to save")
 
+                # Check if location exists
+                has_location = (st.session_state.image_metadata and
+                              'latitude' in st.session_state.image_metadata and
+                              'longitude' in st.session_state.image_metadata)
+
+                # Manual location input if no GPS data
+                if not has_location:
+                    st.warning("⚠️ No GPS location in photo metadata")
+
+                    with st.expander("📍 Add Location Manually", expanded=True):
+                        st.markdown("Enter GPS coordinates for this photo:")
+
+                        col_lat, col_lon = st.columns(2)
+                        with col_lat:
+                            manual_lat = st.number_input(
+                                "Latitude",
+                                min_value=-90.0,
+                                max_value=90.0,
+                                value=0.0,
+                                step=0.0001,
+                                format="%.6f",
+                                help="Example: 37.7749 (San Francisco)"
+                            )
+                        with col_lon:
+                            manual_lon = st.number_input(
+                                "Longitude",
+                                min_value=-180.0,
+                                max_value=180.0,
+                                value=0.0,
+                                step=0.0001,
+                                format="%.6f",
+                                help="Example: -122.4194 (San Francisco)"
+                            )
+
+                        if st.button("✅ Add Location to Photo"):
+                            if manual_lat != 0.0 or manual_lon != 0.0:
+                                if st.session_state.image_metadata is None:
+                                    st.session_state.image_metadata = {}
+                                st.session_state.image_metadata['latitude'] = manual_lat
+                                st.session_state.image_metadata['longitude'] = manual_lon
+                                st.session_state.image_metadata['manual_location'] = True
+                                st.success(f"✅ Location added: {manual_lat:.6f}, {manual_lon:.6f}")
+                                st.rerun()
+                            else:
+                                st.warning("Please enter non-zero coordinates")
+
+                        st.caption("💡 Tip: You can find coordinates on Google Maps by right-clicking a location")
+                else:
+                    lat = st.session_state.image_metadata['latitude']
+                    lon = st.session_state.image_metadata['longitude']
+                    st.success(f"✅ Location: {lat:.6f}°, {lon:.6f}°")
+
                 # Show what will be saved
                 with st.expander("📋 Data to be saved"):
                     data_summary = []
                     if st.session_state.image_metadata:
                         data_summary.append("✅ EXIF metadata")
+                        if 'latitude' in st.session_state.image_metadata:
+                            if st.session_state.image_metadata.get('manual_location'):
+                                data_summary.append("✅ GPS location (manually added)")
+                            else:
+                                data_summary.append("✅ GPS location (from EXIF)")
                     if st.session_state.detected_faces:
                         data_summary.append(f"✅ {len(st.session_state.detected_faces)} detected faces")
                     if st.session_state.face_identifications:

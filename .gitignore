@@ -49,6 +49,7 @@ site/
 face_database/*/           # Personal face photos
 personal_photos/           # Personal photos
 extracted_faces/           # Extracted face images
+uploaded_photos/           # Uploaded photos storage
 *.jpg
 *.jpeg
 *.png

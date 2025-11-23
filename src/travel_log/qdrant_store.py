@@ -460,9 +460,9 @@ class TravelLogQdrantStore:
             query_vector = query_embedding
 
         try:
-            results = self.client.search(
+            query_response = self.client.query_points(
                 collection_name=self.collection_name,
-                query_vector=query_vector,
+                query=query_vector,
                 limit=limit,
                 score_threshold=score_threshold
             )
@@ -476,7 +476,7 @@ class TravelLogQdrantStore:
                     "people": hit.payload.get("people_names", []),
                     "metadata": hit.payload
                 }
-                for hit in results
+                for hit in query_response.points
             ]
         except Exception as e:
             logger.error(f"Error searching: {e}")
@@ -716,9 +716,9 @@ class TravelLogQdrantStore:
                     ]
                 )
 
-            results = self.client.search(
+            query_response = self.client.query_points(
                 collection_name=self.faces_collection_name,
-                query_vector=query_vector,
+                query=query_vector,
                 limit=limit,
                 score_threshold=score_threshold,
                 query_filter=query_filter
@@ -735,7 +735,7 @@ class TravelLogQdrantStore:
                     "bbox": hit.payload.get("bbox"),
                     "metadata": hit.payload
                 }
-                for hit in results
+                for hit in query_response.points
             ]
         except Exception as e:
             logger.error(f"Error searching similar faces: {e}")

@@ -1,0 +1,6 @@
+# Uploaded Photos Storage
+
+This directory stores uploaded photos permanently for the Travel Log application.
+
+Photos are automatically saved here when uploaded through the web interface.
+The directory structure is excluded from git (.gitignore) to protect personal photos.
