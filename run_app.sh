@@ -15,9 +15,9 @@
 echo "🚀 Starting Travel Log Face Recognition App..."
 echo ""
 
-# Check if port 8501 is in use
-if lsof -Pi :8501 -sTCP:LISTEN -t >/dev/null 2>&1 ; then
-    echo "⚠️  Port 8501 is already in use. Stopping existing process..."
+# Check if port 8502 is in use
+if lsof -Pi :8502 -sTCP:LISTEN -t >/dev/null 2>&1 ; then
+    echo "⚠️  Port 8502 is already in use. Stopping existing process..."
     pkill -f "streamlit run" 2>/dev/null
     sleep 2
     echo "✅ Cleaned up old processes"
@@ -25,12 +25,12 @@ if lsof -Pi :8501 -sTCP:LISTEN -t >/dev/null 2>&1 ; then
 fi
 
 echo "📝 Note: Models will download automatically on first use (~100-500MB)"
-echo "🌐 The app will open in your browser at http://localhost:8501"
+echo "🌐 The app will open in your browser at http://localhost:8502"
 echo "🔒 Access: Localhost only (most secure)"
 echo ""
 echo "💡 For network access, use: ./run_app_network.sh"
 echo "🛑 To stop the app, press Ctrl+C"
 echo ""
 
-uv run streamlit run app.py --server.address localhost --server.port 8501
+uv run streamlit run app.py --server.address localhost --server.port 8502
 

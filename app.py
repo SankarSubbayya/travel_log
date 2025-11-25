@@ -108,6 +108,14 @@ if 'qdrant_store' not in st.session_state:
     st.session_state.qdrant_store = None
 if 'current_photo_path' not in st.session_state:
     st.session_state.current_photo_path = None
+if 'current_photo_id' not in st.session_state:
+    st.session_state.current_photo_id = None
+if 'journey_mapper' not in st.session_state:
+    st.session_state.journey_mapper = None
+if 'location_contextualizer' not in st.session_state:
+    st.session_state.location_contextualizer = None
+if 'semantic_search' not in st.session_state:
+    st.session_state.semantic_search = None
 
 def initialize_detector(backend):
     """Initialize the face detector with specified backend."""
@@ -404,8 +412,8 @@ def identify_faces(face_images: List[Dict], confidence_threshold: float = 0.6) -
 
     # Distance threshold for VGG-Face cosine similarity
     # Lower distance = better match (0.0 = perfect match, 1.0 = no similarity)
-    # Set to 0.60 to handle masked faces, different angles, and lighting conditions
-    distance_threshold = 0.60  # Very lenient threshold for real-world photos (masks, angles, lighting)
+    # Set to 0.75 to handle masked faces, different angles, and lighting conditions
+    distance_threshold = 0.75  # Very lenient threshold for real-world photos (masks, angles, lighting)
 
     for idx, face_data in enumerate(face_images):
         try:
@@ -574,12 +582,14 @@ def main():
     st.markdown("**Upload photos, detect faces, and identify them**")
 
     # Create tabs for different features
-    detection_tab, identification_tab, caption_tab, qdrant_tab, database_tab = st.tabs([
+    detection_tab, identification_tab, caption_tab, qdrant_tab, database_tab, journey_tab, search_tab = st.tabs([
         "🔍 Face Detection",
         "🎯 Face Identification",
         "📔 Travel Log",
         "🗄️ Qdrant Storage",
-        "💾 Face Database"
+        "💾 Face Database",
+        "🗺️ Journey Map",
+        "🔎 Search"
     ])
 
     # Sidebar
@@ -879,7 +889,7 @@ Current Configuration:
             - Model: VGG-Face (4096D embeddings)
             - Search: Qdrant vector similarity
             - Distance: Cosine similarity
-            - Threshold: 0.40
+            - Threshold: 0.75
             """)
 
             # Show reference faces count
@@ -1298,7 +1308,7 @@ Current Configuration:
                     if st.session_state.qdrant_store is None:
                         st.warning("⚠️ Please connect to Qdrant first (in the sidebar)")
                     elif st.session_state.current_photo_id is None:
-                        st.warning("⚠️ Please save the photo to Qdrant first (in Face Identification tab)")
+                        st.warning("⚠️ Please save the photo to Qdrant first (in Qdrant Storage tab)")
                     else:
                         try:
                             # Update the photo record in Qdrant with captions
@@ -1520,6 +1530,8 @@ Current Configuration:
                                     face_identifications=st.session_state.face_identifications,
                                     captions=st.session_state.image_captions
                                 )
+                                # Store the photo ID so captions can be saved later
+                                st.session_state.current_photo_id = point_id
                                 st.success(f"✅ Photo saved! ID: {point_id[:8]}...")
 
                                 # Save individual faces if available
@@ -1740,22 +1752,105 @@ Current Configuration:
                 accept_multiple_files=True
             )
 
+            # Option to replace existing files
+            replace_existing = st.checkbox(
+                "Replace existing files",
+                value=False,
+                help="If checked, duplicate filenames will be replaced. Otherwise, files will be auto-renamed (e.g., photo_1.jpg, photo_2.jpg)."
+            )
+
             if st.button("Add to Database"):
                 if person_name and uploaded_images:
                     person_dir = db_path / person_name
                     person_dir.mkdir(parents=True, exist_ok=True)
 
                     count = 0
+                    skipped = 0
+                    replaced = 0
+                    skipped_files = []
+
                     for img_file in uploaded_images:
                         img_path = person_dir / img_file.name
-                        with open(img_path, 'wb') as f:
-                            f.write(img_file.getvalue())
-                        count += 1
 
-                    st.success(f"✅ Added {count} images for {person_name}")
-                    st.rerun()
+                        # Check if file already exists
+                        is_duplicate = img_path.exists()
+
+                        if is_duplicate:
+                            if replace_existing:
+                                # User wants to replace existing file
+                                replaced += 1
+                            else:
+                                # Auto-rename by adding a number suffix
+                                base_name = img_path.stem
+                                extension = img_path.suffix
+                                counter = 1
+                                while img_path.exists():
+                                    img_path = person_dir / f"{base_name}_{counter}{extension}"
+                                    counter += 1
+                                # Now img_path is unique, so this is a new addition
+                                is_duplicate = False
+
+                        try:
+                            with open(img_path, 'wb') as f:
+                                f.write(img_file.getvalue())
+
+                            if not is_duplicate:
+                                count += 1
+                        except Exception as e:
+                            st.error(f"❌ Error saving {img_file.name}: {str(e)}")
+
+                    # Show results
+                    if count > 0:
+                        st.success(f"✅ Added {count} new image(s) for {person_name}")
+                    if replaced > 0:
+                        st.success(f"✅ Replaced {replaced} existing image(s) for {person_name}")
+                    if skipped > 0:
+                        st.warning(f"⚠️ Skipped {skipped} duplicate file(s): {', '.join(skipped_files[:3])}{'...' if len(skipped_files) > 3 else ''}")
+
+                    if count > 0 or replaced > 0 or skipped > 0:
+                        st.info("💡 Click '🔄 Update Reference Faces' below to sync with Qdrant")
+                        st.rerun()
                 else:
                     st.warning("⚠️ Enter name and select images")
+
+            st.divider()
+
+            # Update reference database button
+            st.markdown("**🔄 Update Qdrant Database**")
+            st.caption("Sync face_database to Qdrant vector store")
+
+            if st.button("🔄 Update Reference Faces", type="primary", use_container_width=True):
+                if not st.session_state.qdrant_store:
+                    st.warning("⚠️ Connect to Qdrant first (in sidebar)")
+                else:
+                    with st.spinner("Updating reference faces in Qdrant..."):
+                        import subprocess
+                        result = subprocess.run(
+                            ["uv", "run", "python", "store_reference_faces.py"],
+                            capture_output=True,
+                            text=True
+                        )
+                        if result.returncode == 0:
+                            # Extract the count from output
+                            output = result.stdout
+                            if "Successfully stored" in output:
+                                import re
+                                match = re.search(r'Successfully stored (\d+) reference faces', output)
+                                if match:
+                                    count = match.group(1)
+                                    st.success(f"✅ Successfully updated {count} reference faces in Qdrant!")
+                                else:
+                                    st.success("✅ Reference faces updated successfully!")
+                            else:
+                                st.success("✅ Reference faces updated successfully!")
+
+                            # Show summary in expander
+                            with st.expander("📋 View Update Details"):
+                                st.code(output, language="text")
+                        else:
+                            st.error(f"❌ Error updating reference faces:\n{result.stderr}")
+
+            st.caption("💡 Run this after adding/removing people from face_database/")
 
         with col3:
             st.subheader("👥 People List")
@@ -1806,6 +1901,455 @@ Current Configuration:
         - Use clear, frontal face photos
         - Ensure good lighting and image quality
         """)
+
+    # ============================================================================
+    # TAB 6: JOURNEY MAPPING
+    # ============================================================================
+    with journey_tab:
+        st.header("🗺️ Journey Map")
+        st.markdown("Visualize your travel path on a map with chronological locations")
+
+        # Initialize journey mapper if not already done
+        if st.session_state.journey_mapper is None and st.session_state.qdrant_store:
+            from travel_log import create_journey_mapper
+            st.session_state.journey_mapper = create_journey_mapper(st.session_state.qdrant_store)
+
+        if not st.session_state.qdrant_store:
+            st.warning("⚠️ Please connect to Qdrant first (in sidebar)")
+        elif not st.session_state.journey_mapper:
+            st.error("❌ Journey mapper not initialized")
+        else:
+            col1, col2 = st.columns([1, 1])
+
+            with col1:
+                st.subheader("⚙️ Journey Settings")
+
+                # Date range filter
+                use_date_filter = st.checkbox("Filter by date range", value=False)
+
+                start_date = None
+                end_date = None
+
+                if use_date_filter:
+                    col_start, col_end = st.columns(2)
+                    with col_start:
+                        start_date = st.date_input("Start date")
+                    with col_end:
+                        end_date = st.date_input("End date")
+
+                    if start_date:
+                        start_date = datetime.combine(start_date, datetime.min.time())
+                    if end_date:
+                        end_date = datetime.combine(end_date, datetime.max.time())
+
+                # Generate journey button
+                if st.button("🗺️ Generate Journey Map", type="primary"):
+                    try:
+                        with st.spinner("Generating journey map..."):
+                            journey_summary = st.session_state.journey_mapper.generate_journey_summary(
+                                start_date=start_date,
+                                end_date=end_date
+                            )
+
+                            if journey_summary['total_points'] == 0:
+                                st.info("📷 No photos with GPS data found")
+                            else:
+                                st.session_state.journey_summary = journey_summary
+                                st.success(f"✅ Found {journey_summary['total_points']} locations across {journey_summary['total_days']} days")
+                                st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error generating journey: {str(e)}")
+
+            with col2:
+                st.subheader("📊 Journey Statistics")
+
+                if hasattr(st.session_state, 'journey_summary'):
+                    summary = st.session_state.journey_summary
+
+                    col_stat1, col_stat2, col_stat3 = st.columns(3)
+                    with col_stat1:
+                        st.metric("Total Locations", summary['total_points'])
+                    with col_stat2:
+                        st.metric("Days", summary['total_days'])
+                    with col_stat3:
+                        if summary['total_points'] > 0:
+                            st.metric("Start Date", summary['start_date'])
+
+        # Display journey map
+        st.divider()
+
+        if hasattr(st.session_state, 'journey_summary'):
+            summary = st.session_state.journey_summary
+
+            if summary['total_points'] > 0:
+                st.subheader("🌍 Your Journey")
+
+                # Overall map link
+                st.markdown(f"**[🗺️ Open Full Journey in Google Maps]({summary['map_url']})**")
+
+                st.divider()
+
+                # Daily breakdown
+                st.subheader("📅 Daily Journeys")
+
+                for date, day_info in sorted(summary['daily_maps'].items(), reverse=True):
+                    with st.expander(f"📅 {date} ({day_info['num_photos']} photos)"):
+                        st.markdown(f"**[🗺️ Open Day Map]({day_info['map_url']})**")
+
+                        if day_info['people']:
+                            st.write(f"**People**: {', '.join(day_info['people'])}")
+
+                        # Show photo locations
+                        for point in day_info['points']:
+                            time_str = point['datetime'].strftime('%H:%M')
+                            st.write(f"📍 {time_str} - {point.get('caption', point['filename'])}")
+
+                # Google Maps Embed
+                st.divider()
+                st.subheader("🗺️ Journey Map")
+
+                # Create Google Maps embed URL
+                # Use the first and last points for directions
+                if len(summary['points']) >= 2:
+                    origin = summary['points'][0]
+                    destination = summary['points'][-1]
+                    waypoints = summary['points'][1:-1]
+
+                    # Build embed URL for directions
+                    origin_str = f"{origin['lat']},{origin['lon']}"
+                    dest_str = f"{destination['lat']},{destination['lon']}"
+
+                    if waypoints:
+                        waypoint_str = "|".join(f"{p['lat']},{p['lon']}" for p in waypoints[:23])
+                        embed_url = f"https://www.google.com/maps/embed/v1/directions?key=AIzaSyAOVYRIgupAurZup5y1PRh8Ismb1A3lLao&origin={origin_str}&destination={dest_str}&waypoints={waypoint_str}&mode=driving"
+                    else:
+                        embed_url = f"https://www.google.com/maps/embed/v1/directions?key=AIzaSyAOVYRIgupAurZup5y1PRh8Ismb1A3lLao&origin={origin_str}&destination={dest_str}&mode=driving"
+
+                    # Display embedded map
+                    st.markdown(f'<iframe width="100%" height="600" frameborder="0" style="border:0" src="{embed_url}" allowfullscreen></iframe>', unsafe_allow_html=True)
+                elif len(summary['points']) == 1:
+                    # Single point - show location
+                    point = summary['points'][0]
+                    embed_url = f"https://www.google.com/maps/embed/v1/place?key=AIzaSyAOVYRIgupAurZup5y1PRh8Ismb1A3lLao&q={point['lat']},{point['lon']}&zoom=14"
+                    st.markdown(f'<iframe width="100%" height="600" frameborder="0" style="border:0" src="{embed_url}" allowfullscreen></iframe>', unsafe_allow_html=True)
+
+        # GPS Coordinate Editor
+        st.divider()
+        st.subheader("📍 Edit GPS Coordinates")
+
+        with st.expander("✏️ Update Photo Locations"):
+            if not st.session_state.qdrant_store:
+                st.warning("⚠️ Please connect to Qdrant first")
+            else:
+                # Get all photos
+                all_photos = st.session_state.qdrant_store.get_all_photos(limit=100)
+
+                if all_photos:
+                    st.markdown("**Select a photo to update its GPS coordinates:**")
+
+                    # Create a dropdown with photo names
+                    photo_options = {f"{p.get('filename', 'Unknown')} - {p.get('datetime', 'No date')}": p for p in all_photos}
+                    selected_photo_name = st.selectbox("Photo:", list(photo_options.keys()))
+
+                    if selected_photo_name:
+                        selected_photo = photo_options[selected_photo_name]
+
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            current_lat = selected_photo.get('latitude')
+                            current_lon = selected_photo.get('longitude')
+
+                            st.write(f"**Current coordinates:**")
+                            if current_lat and current_lon:
+                                st.write(f"Latitude: {current_lat}")
+                                st.write(f"Longitude: {current_lon}")
+                                st.markdown(f"[📍 View on Google Maps](https://www.google.com/maps/search/?api=1&query={current_lat},{current_lon})")
+                            else:
+                                st.write("No GPS coordinates set")
+
+                        with col2:
+                            st.write(f"**New coordinates:**")
+                            new_lat = st.number_input("Latitude:", value=float(current_lat) if current_lat else 0.0, format="%.6f", key="edit_lat")
+                            new_lon = st.number_input("Longitude:", value=float(current_lon) if current_lon else 0.0, format="%.6f", key="edit_lon")
+
+                        st.markdown("**Quick location references:**")
+                        location_col1, location_col2 = st.columns(2)
+                        with location_col1:
+                            st.write("🇮🇳 **India:**")
+                            st.write("Chennai: 13.0827, 80.2707")
+                            st.write("Mumbai: 19.0760, 72.8777")
+                            st.write("Delhi: 28.6139, 77.2090")
+                            st.write("Bangalore: 12.9716, 77.5946")
+                            st.write("Kochi: 9.9312, 76.2673")
+                        with location_col2:
+                            st.write("🇺🇸 **United States:**")
+                            st.write("New York: 40.7128, -74.0060")
+                            st.write("San Francisco: 37.7749, -122.4194")
+                            st.write("Los Angeles: 34.0522, -118.2437")
+                            st.write("Chicago: 41.8781, -87.6298")
+                            st.write("Seattle: 47.6062, -122.3321")
+
+                        if st.button("💾 Update GPS Coordinates", type="primary"):
+                            try:
+                                from qdrant_client.models import SetPayload
+
+                                st.session_state.qdrant_store.client.set_payload(
+                                    collection_name="travel_photos",
+                                    payload={
+                                        "latitude": new_lat,
+                                        "longitude": new_lon
+                                    },
+                                    points=[selected_photo['id']]
+                                )
+                                st.success(f"✅ Updated GPS coordinates to {new_lat}, {new_lon}")
+                                st.info("🔄 Regenerate the journey map to see the updated location")
+                            except Exception as e:
+                                st.error(f"❌ Error updating coordinates: {e}")
+                else:
+                    st.info("No photos found in database")
+
+        with st.expander("ℹ️ About Journey Mapping"):
+            st.markdown("""
+            ### How it works
+
+            Journey Mapping creates visual routes from your travel photos by:
+            1. Extracting GPS coordinates from photos
+            2. Sorting by timestamp
+            3. Generating Google Maps routes
+            4. Creating interactive visualizations
+
+            ### Features
+
+            - ✅ Google Maps integration with multi-point routes
+            - ✅ Embedded Google Maps view
+            - ✅ Daily journey breakdowns
+            - ✅ Interactive Leaflet.js maps
+            - ✅ Chronological photo ordering
+            - ✅ People and caption integration
+            - ✅ GPS coordinate editor
+
+            ### Tips
+
+            - Ensure your photos have GPS metadata (EXIF)
+            - Use date filters for specific trips
+            - Click map markers to see photo details
+            - Export HTML maps for offline viewing
+            - Update GPS coordinates using the editor above
+            """)
+
+    # ============================================================================
+    # TAB 7: SEMANTIC SEARCH
+    # ============================================================================
+    with search_tab:
+        st.header("🔎 Semantic Search")
+        st.markdown("Search your travel photos using natural language queries")
+
+        # Initialize semantic search if not already done
+        if st.session_state.semantic_search is None and st.session_state.qdrant_store:
+            from travel_log import create_semantic_search
+            st.session_state.semantic_search = create_semantic_search(st.session_state.qdrant_store)
+
+        if not st.session_state.qdrant_store:
+            st.warning("⚠️ Please connect to Qdrant first (in sidebar)")
+        elif not st.session_state.semantic_search:
+            st.error("❌ Semantic search not initialized")
+        else:
+            # Search input
+            st.subheader("💬 Ask a Question")
+
+            # Example queries
+            example_queries = [
+                "When, where and with whom did I see the turtles on the beach?",
+                "Show me photos from my beach vacation",
+                "Find photos with Sarah in Paris",
+                "Beach photos from last summer",
+                "Pictures of mountains and hiking"
+            ]
+
+            selected_example = st.selectbox(
+                "Or try an example:",
+                [""] + example_queries,
+                index=0
+            )
+
+            search_query = st.text_input(
+                "Search query:",
+                value=selected_example if selected_example else "",
+                placeholder="e.g., When did I visit the beach with John?"
+            )
+
+            col_search, col_limit = st.columns([3, 1])
+            with col_search:
+                search_button = st.button("🔍 Search", type="primary", use_container_width=True)
+            with col_limit:
+                result_limit = st.number_input("Max results", min_value=1, max_value=100, value=10)
+
+            if search_button and search_query:
+                try:
+                    with st.spinner("Searching photos..."):
+                        results = st.session_state.semantic_search.search(
+                            query=search_query,
+                            limit=result_limit
+                        )
+
+                        st.session_state.search_results = results
+
+                        if results:
+                            st.success(f"✅ Found {len(results)} matching photos")
+                        else:
+                            st.info("📷 No matching photos found")
+
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Search error: {str(e)}")
+                    st.error(f"Details: {traceback.format_exc()}")
+
+            # Display search results
+            st.divider()
+
+            if hasattr(st.session_state, 'search_results') and st.session_state.search_results:
+                results = st.session_state.search_results
+
+                st.subheader(f"📸 Search Results ({len(results)} photos)")
+
+                for idx, result in enumerate(results):
+                    with st.container():
+                        st.divider()
+
+                        col_img, col_details = st.columns([1, 2])
+
+                        with col_img:
+                            # Display photo if available
+                            photo_path = result.get('filepath')
+                            if photo_path:
+                                try:
+                                    photo_path_obj = Path(photo_path)
+                                    if photo_path_obj.exists():
+                                        img = Image.open(photo_path)
+                                        st.image(img, use_container_width=True)
+                                except:
+                                    st.info("📷 No preview")
+                            else:
+                                st.info("📷 No preview")
+
+                        with col_details:
+                            # Title
+                            captions = result.get('captions', {})
+                            if captions and 'title' in captions:
+                                st.markdown(f"### {captions['title']}")
+                            else:
+                                st.markdown(f"### {result.get('filename', 'Untitled')}")
+
+                            # Relevance score
+                            score = result.get('relevance_score', 0)
+                            st.progress(score, text=f"Relevance: {score:.1%}")
+
+                            # Match reasons
+                            match_reasons = result.get('match_reasons', [])
+                            if match_reasons:
+                                st.markdown("**Why this matched:**")
+                                for reason in match_reasons:
+                                    st.write(f"- {reason}")
+
+                            # Metadata
+                            meta_parts = []
+
+                            if 'datetime' in result:
+                                meta_parts.append(f"📅 {result['datetime']}")
+
+                            people = result.get('people', [])
+                            if people:
+                                meta_parts.append(f"👥 {', '.join(people)}")
+
+                            if 'latitude' in result and 'longitude' in result:
+                                lat, lon = result['latitude'], result['longitude']
+                                maps = format_gps_for_maps(lat, lon)
+                                meta_parts.append(f"[📍 Map]({maps['google_maps']})")
+
+                            if meta_parts:
+                                st.markdown(" • ".join(meta_parts))
+
+                            # Caption
+                            if captions and 'caption' in captions:
+                                with st.expander("📝 Caption"):
+                                    st.write(captions['caption'])
+
+            # Context enrichment section
+            st.divider()
+            st.subheader("🌍 Enrich with Wikipedia Context")
+
+            st.markdown("""
+            Add location context from Wikipedia to all your photos with GPS data.
+            This enables better semantic search based on place descriptions.
+            """)
+
+            # Initialize location contextualizer if needed
+            if st.session_state.location_contextualizer is None and st.session_state.qdrant_store:
+                from travel_log import create_location_contextualizer
+                st.session_state.location_contextualizer = create_location_contextualizer(
+                    st.session_state.qdrant_store
+                )
+
+            if st.button("🌍 Add Wikipedia Context to All Photos", type="secondary"):
+                if not st.session_state.location_contextualizer:
+                    st.error("❌ Location contextualizer not initialized")
+                else:
+                    try:
+                        with st.spinner("Adding Wikipedia context to photos..."):
+                            stats = st.session_state.location_contextualizer.bulk_contextualize_photos(limit=100)
+
+                            st.success(f"✅ Contextualization complete!")
+                            st.write(f"- Total photos: {stats['total_photos']}")
+                            st.write(f"- Contextualized: {stats['contextualized']}")
+                            st.write(f"- Skipped (no GPS): {stats['skipped_no_gps']}")
+                            st.write(f"- Errors: {stats['errors']}")
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+
+        with st.expander("ℹ️ About Semantic Search"):
+            st.markdown("""
+            ### How it works
+
+            Semantic Search uses natural language processing to understand your queries and find relevant photos:
+
+            1. **Query Parsing**: Extracts people, places, dates, and keywords
+            2. **Multi-modal Filtering**: Searches across metadata, captions, locations, faces
+            3. **Relevance Scoring**: Ranks results by how well they match
+            4. **Context Integration**: Uses Wikipedia descriptions for richer search
+
+            ### Supported Query Types
+
+            **People queries:**
+            - "Photos with Sarah"
+            - "Show me pictures with John and Mary"
+
+            **Location queries:**
+            - "Photos from Paris"
+            - "Beach photos"
+            - "Pictures near the Eiffel Tower"
+
+            **Time queries:**
+            - "Photos from last summer"
+            - "Pictures from 2024"
+            - "January vacation photos"
+
+            **Content queries:**
+            - "Photos with turtles"
+            - "Mountain hiking pictures"
+            - "Sunset beach scenes"
+
+            **Combined queries:**
+            - "When, where and with whom did I see the turtles on the beach?"
+            - "Show me Sarah's photos from Paris in 2024"
+
+            ### Tips
+
+            - Be specific with names and places
+            - Use natural language - ask questions naturally
+            - Add Wikipedia context for better location-based search
+            - Identify faces before searching for people
+            """)
 
 if __name__ == "__main__":
     main()

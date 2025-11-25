@@ -56,6 +56,9 @@ from .exif_utils import (
     has_gps_data,
     has_datetime
 )
+from .journey_mapper import JourneyMapper, create_journey_mapper
+from .location_context import LocationContextualizer, create_location_contextualizer
+from .semantic_search import SemanticPhotoSearch, create_semantic_search
 
 __all__ = [
     'config',
@@ -86,4 +89,11 @@ __all__ = [
     'format_gps_for_maps',
     'has_gps_data',
     'has_datetime',
+    # Journey mapping and search
+    'JourneyMapper',
+    'create_journey_mapper',
+    'LocationContextualizer',
+    'create_location_contextualizer',
+    'SemanticPhotoSearch',
+    'create_semantic_search',
 ]

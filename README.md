@@ -1,10 +1,29 @@
 # Travel Log
 
-A Python project for managing travel memories with advanced face recognition capabilities.
+An AI-powered travel photo management system with face recognition, journey mapping, and natural language search capabilities.
 
 ## Features
 
-### 📱 HEIC Image Support (NEW!)
+### 🆕 Latest Features (v2.0)
+
+#### 🗺️ Journey Mapping
+- **Interactive Maps**: Visualize your travel paths on Google Maps and Leaflet.js
+- **Daily Breakdowns**: Group photos by day with separate route maps
+- **Chronological Routes**: Automatic route generation through all photo locations
+- **People Integration**: See who was at each location
+
+#### 🔎 Semantic Search
+- **Natural Language Queries**: Ask questions like "When, where and with whom did I see the turtles on the beach?"
+- **Multi-modal Search**: Search across people, locations, dates, and photo content
+- **Smart Ranking**: Relevance scoring with match explanations
+- **Query Understanding**: Automatically extracts people, places, dates, and keywords
+
+#### 🌍 Location Contextualization
+- **Wikipedia Integration**: Automatic place descriptions and context
+- **Reverse Geocoding**: GPS coordinates → place names
+- **Location Intelligence**: Enriches photos with location history and facts
+
+### 📱 HEIC Image Support
 
 Full support for Apple's HEIC/HEIF image format:
 - **Automatic conversion** to JPEG for processing
@@ -14,13 +33,13 @@ Full support for Apple's HEIC/HEIF image format:
 
 ### 🎭 Face Recognition
 
-Travel Log now includes comprehensive face detection, recognition, and management capabilities:
+Comprehensive face detection, recognition, and management capabilities:
 
 - **Face Detection**: Automatically detect and extract faces from group photos
-- **Face Recognition**: Identify people in your travel photos
+- **Face Recognition**: Identify people in your travel photos using VGG-Face/DeepFace
 - **Face Labeling**: Automatically label faces with names
-- **Face Embeddings**: Generate signature vectors for advanced similarity search
-- **Face Clustering**: Group similar faces together
+- **Face Embeddings**: Generate 4096D signature vectors for similarity search
+- **Qdrant Integration**: Vector database storage for semantic face search
 - **Batch Processing**: Efficiently process entire photo collections
 
 ### Core Capabilities
@@ -62,7 +81,7 @@ source .venv/bin/activate  # On Unix/macOS
 .venv\Scripts\activate  # On Windows
 ```
 
-## 🌐 Web Interface (NEW!)
+## 🌐 Web Interface
 
 Launch the interactive Streamlit web app:
 
@@ -74,14 +93,25 @@ Launch the interactive Streamlit web app:
 uv run streamlit run app.py
 ```
 
-The app provides:
-- 📤 **Drag-and-drop image upload**
-- 🔍 **Real-time face detection**
-- 👤 **Visual preview of detected faces**
-- ⬇️ **Download extracted faces**
-- ⚙️ **Configure detection settings**
-- 📊 **Statistics and confidence scores**
-- 📸 **EXIF metadata display** - Shows date, time, GPS location, camera info
+The app provides **7 powerful tabs**:
+
+1. **🔍 Face Detection** - Detect and extract faces from photos
+2. **🎯 Face Identification** - Identify people using DeepFace + Qdrant
+3. **📔 Travel Log** - View all photos with captions, locations, and people
+4. **🗄️ Qdrant Storage** - Save photos to vector database with metadata
+5. **💾 Face Database** - Manage known people for face recognition
+6. **🗺️ Journey Map** - Visualize travel paths on interactive maps
+7. **🔎 Search** - Natural language search across all your photos
+
+**Key Features:**
+- 📤 **Drag-and-drop image upload** with HEIC support
+- 🔍 **Real-time face detection** with RetinaFace/MTCNN
+- 👤 **Automatic face identification** via Qdrant vector search
+- 🤖 **AI caption generation** with LLaVA vision model
+- 📸 **EXIF metadata display** - Date, time, GPS location, camera info
+- 🗺️ **Journey mapping** - Google Maps routes and interactive maps
+- 🔎 **Semantic search** - "Find photos with Sarah at the beach"
+- ⬇️ **Download extracted faces** individually or as ZIP
 
 **Troubleshooting:**
 - Port in use? `./kill_streamlit.sh` then `./run_app.sh`
@@ -135,17 +165,28 @@ print(f"Processed {summary['extracted_faces']} faces")
 
 ## Documentation
 
+### New Features (v2.0)
+- **[NEW_FEATURES.md](NEW_FEATURES.md)** - Complete guide to Journey Mapping, Search, and Location Context
+- **[test_semantic_search.py](test_semantic_search.py)** - Test script for semantic search
+
+### Core Documentation
 - **[Quick Start Guide](documentation/FACE_RECOGNITION_QUICKSTART.md)** - Get started in 5 minutes
+- **[QUICK_START_GUIDE.md](QUICK_START_GUIDE.md)** - Complete setup and usage guide
+- **[PROJECT_STATUS.md](PROJECT_STATUS.md)** - Current project status and features
+- **[CLAUDE.md](CLAUDE.md)** - Development guide for Claude Code
+
+### Technical Guides
 - **[Configuration Guide](documentation/CONFIGURATION.md)** - Configure paths and settings
-- **[Complete Documentation Index](documentation/README.md)** - All guides and tutorials
 - **[Face Recognition Guide](docs/face-recognition-guide.md)** - Comprehensive technical guide
+- **[Testing Guide](documentation/TESTING_GUIDE.md)** - How to test the application
 - **[Examples](examples/README.md)** - Example scripts demonstrating all features
 
-### Key Guides
-- [Configuration Guide](documentation/CONFIGURATION.md) - Configure image paths and settings
-- [Testing Guide](documentation/TESTING_GUIDE.md) - How to test the application
-- [TensorFlow Warnings](documentation/TENSORFLOW_WARNING_FIX.md) - Fix common issues
-- [Alternatives](documentation/DEEPFACE_ALTERNATIVES.md) - Other face recognition libraries
+### Advanced Topics
+- [Qdrant Integration](docs/guides/QDRANT_GUIDE.md) - Vector database guide
+- [Caption Generation](docs/guides/CAPTION_GENERATION_GUIDE.md) - AI captions with LLaVA
+- [Face Identification](docs/guides/FACE_IDENTIFICATION_GUIDE.md) - Qdrant-based face recognition
+- [Batch Processing](docs/guides/BATCH_PROCESSING_GUIDE.md) - Process multiple photos
+- [GPU Usage](docs/technical/GPU_USAGE.md) - GPU acceleration guide
 
 ## Project Structure
 
@@ -153,20 +194,32 @@ print(f"Processed {summary['extracted_faces']} faces")
 travel_log/
 ├── src/travel_log/
 │   ├── __init__.py
-│   ├── face_detector.py      # Face detection & extraction
-│   ├── face_embeddings.py    # Face embeddings generation
-│   ├── face_labeler.py       # Face recognition & labeling
-│   └── face_manager.py       # High-level orchestrator
+│   ├── face_detector.py         # Face detection & extraction
+│   ├── face_embeddings.py       # Face embeddings generation
+│   ├── face_labeler.py          # Face recognition & labeling
+│   ├── face_manager.py          # High-level orchestrator
+│   ├── caption_generator.py     # LLaVA AI captions
+│   ├── dspy_llava_integration.py # DSPy enhanced captions
+│   ├── qdrant_store.py          # Vector database integration
+│   ├── journey_mapper.py        # NEW: Journey mapping
+│   ├── location_context.py      # NEW: Wikipedia integration
+│   ├── semantic_search.py       # NEW: Natural language search
+│   ├── image_utils.py           # HEIC/image utilities
+│   └── exif_utils.py            # GPS/EXIF metadata
+├── app.py                       # Streamlit web interface
+├── store_reference_faces.py     # Populate Qdrant with known faces
+├── test_semantic_search.py      # NEW: Test search functionality
 ├── examples/
 │   ├── face_detection_example.py
 │   ├── face_labeling_example.py
 │   ├── face_embeddings_example.py
-│   ├── complete_workflow_example.py
-│   └── README.md
+│   └── complete_workflow_example.py
 ├── docs/
-│   ├── face-recognition-guide.md
-│   └── ...
-└── tests/
+│   ├── guides/                  # User guides
+│   ├── technical/               # Technical documentation
+│   └── archive/                 # Superseded docs
+├── tests/                       # Test suite
+└── face_database/               # Known people for face recognition
 ```
 
 ## Examples
@@ -180,13 +233,28 @@ Check out the `examples/` directory for:
 
 ## Requirements
 
+### Core Dependencies
 - Python >= 3.12
-- DeepFace >= 0.0.93
-- OpenCV >= 4.8.0
-- Pillow >= 10.0.0
-- NumPy >= 1.24.0
+- DeepFace >= 0.0.93 (face recognition)
+- OpenCV >= 4.8.0 (image processing)
+- Pillow >= 10.0.0 (image handling)
+- NumPy >= 1.24.0 (numerical operations)
+- Qdrant Client >= 1.15.1 (vector database)
+- Streamlit >= 1.28.0 (web interface)
+
+### New Dependencies (v2.0)
+- sentence-transformers >= 5.1.2 (text embeddings for search)
+- requests >= 2.31.0 (Wikipedia API)
+
+### Optional
+- DSPy AI >= 3.0.4 (enhanced captions)
+- Ollama with llava:7b (AI caption generation)
 
 All dependencies are managed via `pyproject.toml` and installed with `uv sync`.
+
+### External Services
+- **Qdrant**: Vector database (running on sapphire:6333)
+- **Ollama**: Local LLM server for caption generation (optional)
 
 ## Development
 

@@ -51,15 +51,35 @@ uv run pytest
    - DSPy-enhanced captions with context (face names, GPS, timestamps)
    - Generates titles, detailed captions, travel descriptions, hashtags
 
-4. **Streamlit Web App** (`app.py`)
-   - 5 tabs: Face Detection, Face Identification, Travel Log, Qdrant Storage, Face Database
+4. **🆕 Journey Mapping** (`src/travel_log/journey_mapper.py`)
+   - Visualize travel paths on Google Maps and Leaflet.js interactive maps
+   - Group photos by day with chronological route generation
+   - Export HTML maps with clickable markers showing photo details
+   - Date filtering for specific trips
+
+5. **🆕 Location Context** (`src/travel_log/location_context.py`)
+   - Reverse geocoding: GPS coordinates → place names (OpenStreetMap Nominatim)
+   - Wikipedia integration: Fetch articles and summaries about locations
+   - Bulk contextualization: Add Wikipedia data to all photos with GPS
+   - Smart caching to avoid redundant API calls
+
+6. **🆕 Semantic Search** (`src/travel_log/semantic_search.py`)
+   - Natural language query parsing: Extracts people, places, dates, keywords
+   - Multi-modal search: Across faces, locations, captions, metadata
+   - Relevance scoring and ranking with match explanations
+   - Supports complex queries like "When, where and with whom did I see the turtles?"
+
+7. **Streamlit Web App** (`app.py`)
+   - **7 tabs**: Face Detection, Face Identification, Travel Log, Qdrant Storage, Face Database, 🆕 Journey Map, 🆕 Search
    - **Face Detection**: RetinaFace (default) or MTCNN backend with 0.6 confidence threshold
    - **Face Identification**: Automatic DeepFace/VGG-Face via Qdrant (no manual initialization)
    - **Travel Log**: View all photos with captions, locations, people, and delete functionality
    - **Qdrant Storage**: Save photos with manual GPS location input if EXIF missing
-   - Session state management for detector, faces, identifications, captions, qdrant_store
+   - **🆕 Journey Map**: Generate interactive travel path visualizations
+   - **🆕 Search**: Natural language search with example queries
+   - Session state management for detector, faces, identifications, captions, qdrant_store, journey_mapper, semantic_search
 
-5. **Image Utilities** (`src/travel_log/`)
+8. **Image Utilities** (`src/travel_log/`)
    - `image_utils.py`: HEIC/HEIF image conversion to JPEG
    - `exif_utils.py`: EXIF metadata extraction (GPS, datetime, camera info)
 
@@ -95,6 +115,9 @@ python tests/identify_with_qdrant.py
 
 # View Qdrant database
 python tests/quick_view_qdrant.py
+
+# 🆕 Test semantic search
+uv run python test_semantic_search.py
 ```
 
 ## Important Implementation Details
@@ -199,13 +222,38 @@ captions = generator.generate_all(image)  # Returns title, caption, travel_capti
 3. Click "Identify Faces" in "Face Identification" tab
 4. View all photos in "Travel Log" tab
 5. Delete unwanted photos with 🗑️ button
+6. 🆕 Generate journey maps in "Journey Map" tab
+7. 🆕 Search photos with natural language in "Search" tab
 
-**Search photos by person via Python:**
+**🆕 Search photos via Python:**
 ```python
+from travel_log import create_semantic_search
 from travel_log.qdrant_store import create_qdrant_store
 
 store = create_qdrant_store(url="http://sapphire:6333")
-photos = store.search_by_person("Alice", limit=20)
+search = create_semantic_search(store)
+
+# Natural language search
+results = search.search("When, where and with whom did I see the turtles on the beach?")
+for result in results:
+    print(f"{result['filename']}: {result['relevance_score']:.1%}")
+```
+
+**🆕 Generate journey map via Python:**
+```python
+from travel_log import create_journey_mapper
+from travel_log.qdrant_store import create_qdrant_store
+
+store = create_qdrant_store(url="http://sapphire:6333")
+mapper = create_journey_mapper(store)
+
+# Generate journey summary
+summary = mapper.generate_journey_summary()
+print(f"Journey: {summary['total_points']} locations across {summary['total_days']} days")
+print(f"Google Maps: {summary['map_url']}")
+
+# Create interactive HTML map
+html_map = mapper.create_html_map(summary['points'], output_path="journey.html")
 ```
 
 ### Add GPS Location Manually

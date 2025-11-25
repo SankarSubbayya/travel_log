@@ -624,6 +624,10 @@ class TravelLogQdrantStore:
                     "datetime": point.payload.get("exif", {}).get("datetime"),
                     "people": point.payload.get("people_names", []),
                     "num_faces": point.payload.get("num_faces", 0),
+                    "latitude": point.payload.get("latitude"),
+                    "longitude": point.payload.get("longitude"),
+                    "captions": point.payload.get("captions", {}),
+                    "location_context": point.payload.get("location_context", {}),
                     "metadata": point.payload
                 }
                 for point in results[0]
